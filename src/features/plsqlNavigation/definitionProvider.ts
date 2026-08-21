@@ -2,11 +2,11 @@ import * as vscode from 'vscode';
 import { PlsqlParser } from './plsqlParser';
 import { WorkspaceIndexer, WorkspaceDefinition } from './workspaceIndexer';
 import {
-    extractPackageSymbols,
-    findPackageNavigationTargets,
-    findPackageSymbolAt,
-    PackageNavigationKind,
-    PackageSymbol
+    extractProgramUnitSymbols,
+    findNavigationTargets,
+    findSymbolAt,
+    ProgramUnitNavigationKind,
+    ProgramUnitSymbol
 } from './semanticNavigation';
 
 /**
@@ -37,9 +37,9 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
-        const packageTargets = this.findPackageLocations(document, position, 'definition');
-        if (packageTargets) {
-            return packageTargets;
+        const programUnitTargets = this.findProgramUnitLocations(document, position, 'definition');
+        if (programUnitTargets) {
+            return programUnitTargets;
         }
         return this.findLocation(document, position, 'Definition');
     }
@@ -49,7 +49,7 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Declaration> {
-        return this.findPackageLocations(document, position, 'declaration');
+        return this.findProgramUnitLocations(document, position, 'declaration');
     }
     
     public provideImplementation(
@@ -57,37 +57,37 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
-        return this.findPackageLocations(document, position, 'implementation');
+        return this.findProgramUnitLocations(document, position, 'implementation');
     }
 
-    private findPackageLocations(
+    private findProgramUnitLocations(
         document: vscode.TextDocument,
         position: vscode.Position,
-        navigation: PackageNavigationKind
+        navigation: ProgramUnitNavigationKind
     ): vscode.LocationLink[] | undefined {
         if (document.uri.scheme !== 'file') {
             return undefined;
         }
 
-        const documentSymbols = extractPackageSymbols({
+        const documentSymbols = extractProgramUnitSymbols({
             uri: document.uri.toString(),
             text: document.getText()
         });
-        const origin = findPackageSymbolAt(documentSymbols, position.line, position.character);
+        const origin = findSymbolAt(documentSymbols, position.line, position.character);
         if (!origin) {
             return undefined;
         }
 
         const indexedSymbols = this.workspaceIndexer
-            ? this.workspaceIndexer.findPackageSymbols(origin.name).filter(symbol => symbol.uri !== document.uri.toString())
+            ? this.workspaceIndexer.findProgramUnitSymbols(origin.name).filter(symbol => symbol.uri !== document.uri.toString())
             : [];
-        const targets = findPackageNavigationTargets(origin, [...documentSymbols, ...indexedSymbols], navigation);
+        const targets = findNavigationTargets(origin, [...documentSymbols, ...indexedSymbols], navigation);
         const originRange = document.getWordRangeAtPosition(position, /\w+/);
 
         this.outputChannel.appendLine(
-            `[${navigation}] Found ${targets.length} package counterpart(s) for "${origin.name}"`
+            `[${navigation}] Found ${targets.length} program-unit counterpart(s) for "${origin.name}"`
         );
-        return targets.map(target => this.createPackageLocationLink(target, originRange));
+        return targets.map(target => this.createProgramUnitLocationLink(target, originRange));
     }
     
     private findLocation(
@@ -235,8 +235,8 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         };
     }
 
-    private createPackageLocationLink(
-        symbol: PackageSymbol,
+    private createProgramUnitLocationLink(
+        symbol: ProgramUnitSymbol,
         originRange: vscode.Range | undefined
     ): vscode.LocationLink {
         const targetStart = new vscode.Position(symbol.line, symbol.column);

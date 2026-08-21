@@ -3,71 +3,96 @@ export interface SemanticDocument {
     text: string;
 }
 
-export type PackageSide = 'specification' | 'body';
+export type ProgramUnitSide = 'specification' | 'body';
+export type ProgramUnitKind = 'package' | 'type';
+export type ProgramUnitModifier = 'constructor' | 'member' | 'static' | 'map' | 'order' | 'overriding';
 
-export interface PackageSymbol {
+export interface ProgramUnitSymbol {
     uri: string;
-    packageName: string;
+    programUnitName: string;
+    programUnitKind: ProgramUnitKind;
     name: string;
-    kind: 'package' | 'procedure' | 'function';
-    side: PackageSide;
+    kind: 'package' | 'type' | 'procedure' | 'function';
+    modifiers: ProgramUnitModifier[];
+    signature: string;
+    parameterCount: number;
+    side: ProgramUnitSide;
     line: number;
     column: number;
 }
 
-export type PackageNavigationKind = 'definition' | 'declaration' | 'implementation';
+export type ProgramUnitNavigationKind = 'definition' | 'declaration' | 'implementation';
 
-/** Extract the package symbols needed for spec/body navigation. */
-export function extractPackageSymbols(document: SemanticDocument): PackageSymbol[] {
+/** Extract the program-unit symbols needed for spec/body navigation. */
+export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUnitSymbol[] {
     const source = maskCommentsAndStrings(document.text);
-    const symbols: PackageSymbol[] = [];
-    const packagePattern = /\bPACKAGE\s+(BODY\s+)?(?:(?:[A-Za-z][\w$#]*)\s*\.\s*)?([A-Za-z][\w$#]*)\s+(?:(?:AUTHID\s+(?:CURRENT_USER|DEFINER))\s+)?(?:IS|AS)\b/gi;
+    const symbols: ProgramUnitSymbol[] = [];
+    const programUnitPattern = /\b(PACKAGE|TYPE)\s+(BODY\s+)?(?:(?:[A-Za-z][\w$#]*)\s*\.\s*)?([A-Za-z][\w$#]*)\s+(?:FORCE\s+)?(?:(?:AUTHID\s+(?:CURRENT_USER|DEFINER))\s+)?(IS|AS|UNDER)\b/gi;
 
-    for (const match of source.matchAll(packagePattern)) {
-        const packageName = match[2];
-        const nameOffset = match.index + match[0].toLowerCase().lastIndexOf(packageName.toLowerCase());
+    for (const match of source.matchAll(programUnitPattern)) {
+        if (match[1].toUpperCase() === 'TYPE' && !match[2] &&
+            match[4].toUpperCase() !== 'UNDER' &&
+            !/^\s*OBJECT\b/i.test(source.slice(match.index + match[0].length))) {
+            continue;
+        }
+        const programUnitName = match[3];
+        const nameOffset = match.index + match[0].toLowerCase().lastIndexOf(programUnitName.toLowerCase());
         const position = offsetToPosition(source, nameOffset);
 
         symbols.push({
             uri: document.uri,
-            packageName,
-            name: packageName,
-            kind: 'package',
-            side: match[1] ? 'body' : 'specification',
+            programUnitName,
+            programUnitKind: match[1].toLowerCase() as ProgramUnitKind,
+            name: programUnitName,
+            kind: match[1].toLowerCase() as 'package' | 'type',
+            modifiers: [],
+            signature: '',
+            parameterCount: 0,
+            side: match[2] ? 'body' : 'specification',
             line: position.line,
             column: position.column
         });
 
-        const packageEnd = findPackageEnd(source, match.index + match[0].length, packageName);
-        const packageText = source.slice(match.index + match[0].length, packageEnd);
-        const memberPattern = /^[ \t]*(PROCEDURE|FUNCTION)\s+([A-Za-z][\w$#]*)\b/gim;
+        const programUnitEnd = findProgramUnitEnd(source, match.index + match[0].length, programUnitName);
+        const programUnitText = source.slice(match.index + match[0].length, programUnitEnd);
+        const memberPattern = /^[ \t]*((?:(?:CONSTRUCTOR|MEMBER|STATIC|MAP|ORDER|OVERRIDING)\s+)*)(PROCEDURE|FUNCTION)\s+([A-Za-z][\w$#]*)\b/gim;
         let skipMembersBefore = 0;
 
-        for (const memberMatch of packageText.matchAll(memberPattern)) {
+        for (const memberMatch of programUnitText.matchAll(memberPattern)) {
             if (memberMatch.index < skipMembersBefore) {
                 continue;
             }
 
-            const memberName = memberMatch[2];
+            const memberName = memberMatch[3];
+            const modifiers = memberMatch[1].trim().toLowerCase().split(/\s+/)
+                .filter(Boolean) as ProgramUnitModifier[];
+            const parameters = extractParameterSignature(
+                programUnitText,
+                memberMatch.index + memberMatch[0].length
+            );
             const memberOffset = match.index + match[0].length + memberMatch.index +
                 memberMatch[0].toLowerCase().lastIndexOf(memberName.toLowerCase());
             const memberPosition = offsetToPosition(source, memberOffset);
 
             symbols.push({
                 uri: document.uri,
-                packageName,
+                programUnitName,
+                programUnitKind: match[1].toLowerCase() as ProgramUnitKind,
                 name: memberName,
-                kind: memberMatch[1].toLowerCase() as 'procedure' | 'function',
-                side: match[1] ? 'body' : 'specification',
+                kind: memberMatch[2].toLowerCase() as 'procedure' | 'function',
+                modifiers,
+                signature: parameters.signature,
+                parameterCount: parameters.count,
+                side: match[2] ? 'body' : 'specification',
                 line: memberPosition.line,
                 column: memberPosition.column
             });
 
-            if (match[1]) {
-                const header = findMemberHeader(packageText, memberMatch.index + memberMatch[0].length);
+            if (match[2]) {
+                const header = findMemberHeader(programUnitText, memberMatch.index + memberMatch[0].length);
                 const memberEnd = header?.bodyStart === undefined
                     ? undefined
-                    : findMemberEnd(packageText, header.bodyStart, memberName);
+                    : findMemberEnd(programUnitText, header.bodyStart, memberName);
                 if (memberEnd !== undefined) {
                     skipMembersBefore = memberEnd;
                 }
@@ -82,23 +107,108 @@ function findMemberHeader(
     text: string,
     start: number
 ): { bodyStart?: number; end: number } | undefined {
-    const terminator = /\b(?:IS|AS)\b|;/gi;
-    terminator.lastIndex = start;
-    const match = terminator.exec(text);
-    if (!match) {
-        return undefined;
+    const tokenPattern = /[A-Za-z][\w$#]*|[(),;]/g;
+    tokenPattern.lastIndex = start;
+    let depth = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = tokenPattern.exec(text))) {
+        const value = match[0].toUpperCase();
+        if (value === '(') {
+            depth++;
+        } else if (value === ')') {
+            if (depth === 0) {
+                return { end: tokenPattern.lastIndex };
+            }
+            depth--;
+        } else if (depth === 0 && (value === ';' || value === ',')) {
+            return { end: tokenPattern.lastIndex };
+        } else if (depth === 0 && (value === 'IS' || value === 'AS')) {
+            const next = nextToken(text, tokenPattern.lastIndex);
+            if (value === 'AS' && next?.value.toUpperCase() === 'RESULT') {
+                tokenPattern.lastIndex = next.end;
+                continue;
+            }
+            return { bodyStart: tokenPattern.lastIndex, end: tokenPattern.lastIndex };
+        }
     }
-    return match[0] === ';'
-        ? { end: terminator.lastIndex }
-        : { bodyStart: terminator.lastIndex, end: terminator.lastIndex };
+
+    return undefined;
+}
+
+function extractParameterSignature(text: string, start: number): { signature: string; count: number } {
+    let opening = start;
+    while (/\s/.test(text[opening] || '')) {
+        opening++;
+    }
+    if (text[opening] !== '(') {
+        return { signature: '', count: 0 };
+    }
+
+    let depth = 1;
+    let closing = opening + 1;
+    while (closing < text.length && depth > 0) {
+        if (text[closing] === '(') {
+            depth++;
+        } else if (text[closing] === ')') {
+            depth--;
+        }
+        closing++;
+    }
+    if (depth !== 0) {
+        return { signature: '', count: 0 };
+    }
+
+    const parameters = splitParameters(text.slice(opening + 1, closing - 1));
+    return {
+        signature: parameters.map(normalizeParameter).join(','),
+        count: parameters.length
+    };
+}
+
+function splitParameters(text: string): string[] {
+    const parameters: string[] = [];
+    let start = 0;
+    let depth = 0;
+
+    for (let index = 0; index < text.length; index++) {
+        if (text[index] === '(') {
+            depth++;
+        } else if (text[index] === ')') {
+            depth--;
+        } else if (text[index] === ',' && depth === 0) {
+            parameters.push(text.slice(start, index));
+            start = index + 1;
+        }
+    }
+    const last = text.slice(start).trim();
+    if (last) {
+        parameters.push(last);
+    }
+    return parameters;
+}
+
+function normalizeParameter(parameter: string): string {
+    const withoutDefault = parameter.replace(/\s+(?:DEFAULT|:=)\s+.*$/i, '');
+    return withoutDefault
+        .trim()
+        .toUpperCase()
+        .replace(/^[A-Z][\w$#]*\s+/, '')
+        .replace(/^IN\s+(?!OUT\b)/, '')
+        .replace(/\s*([.%(),])\s*/g, '$1')
+        .replace(/\s+/g, ' ');
 }
 
 function findMemberEnd(text: string, start: number, memberName: string): number | undefined {
+    const structuralEnd = findStructuralMemberEnd(text, start);
+    if (structuralEnd !== undefined) {
+        return structuralEnd;
+    }
     const escapedName = memberName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const endPattern = new RegExp(`\\bEND\\s+${escapedName}\\s*;`, 'ig');
     endPattern.lastIndex = start;
     const namedEnd = endPattern.exec(text);
-    return namedEnd ? endPattern.lastIndex : findStructuralMemberEnd(text, start);
+    return namedEnd ? endPattern.lastIndex : undefined;
 }
 
 function findStructuralMemberEnd(text: string, start: number): number | undefined {
@@ -184,41 +294,49 @@ function nextToken(text: string, start: number): { value: string; end: number } 
     return match ? { value: match[0], end: tokenPattern.lastIndex } : undefined;
 }
 
-/** Return declarations or implementations belonging to the opposite package side. */
-export function findPackageCounterparts(
-    origin: PackageSymbol,
-    candidates: readonly PackageSymbol[]
-): PackageSymbol[] {
-    const oppositeSide: PackageSide = origin.side === 'specification' ? 'body' : 'specification';
-    return candidates.filter(candidate =>
+/** Return declarations or implementations belonging to the opposite program-unit side. */
+export function findCounterparts(
+    origin: ProgramUnitSymbol,
+    candidates: readonly ProgramUnitSymbol[]
+): ProgramUnitSymbol[] {
+    const oppositeSide: ProgramUnitSide = origin.side === 'specification' ? 'body' : 'specification';
+    const matchingSymbols = candidates.filter(candidate =>
         candidate.side === oppositeSide &&
         candidate.kind === origin.kind &&
-        candidate.packageName.toLowerCase() === origin.packageName.toLowerCase() &&
-        candidate.name.toLowerCase() === origin.name.toLowerCase()
+        candidate.programUnitKind === origin.programUnitKind &&
+        candidate.programUnitName.toLowerCase() === origin.programUnitName.toLowerCase() &&
+        candidate.name.toLowerCase() === origin.name.toLowerCase() &&
+        candidate.modifiers.join(' ') === origin.modifiers.join(' ')
     );
+    const exact = matchingSymbols.filter(candidate => candidate.signature === origin.signature);
+    if (exact.length > 0 || origin.signature === '') {
+        return exact;
+    }
+    const sameArity = matchingSymbols.filter(candidate => candidate.parameterCount === origin.parameterCount);
+    return sameArity.length === 1 ? sameArity : [];
 }
 
-/** Apply VS Code's definition/declaration/implementation direction to a package symbol. */
-export function findPackageNavigationTargets(
-    origin: PackageSymbol,
-    candidates: readonly PackageSymbol[],
-    navigation: PackageNavigationKind
-): PackageSymbol[] {
+/** Apply VS Code's definition/declaration/implementation direction to a program-unit symbol. */
+export function findNavigationTargets(
+    origin: ProgramUnitSymbol,
+    candidates: readonly ProgramUnitSymbol[],
+    navigation: ProgramUnitNavigationKind
+): ProgramUnitSymbol[] {
     if (navigation === 'declaration' && origin.side !== 'body') {
         return [];
     }
     if (navigation === 'implementation' && origin.side !== 'specification') {
         return [];
     }
-    return findPackageCounterparts(origin, candidates);
+    return findCounterparts(origin, candidates);
 }
 
-/** Find a package header or direct member whose name contains the cursor. */
-export function findPackageSymbolAt(
-    symbols: readonly PackageSymbol[],
+/** Find a program-unit header or direct member whose name contains the cursor. */
+export function findSymbolAt(
+    symbols: readonly ProgramUnitSymbol[],
     line: number,
     column: number
-): PackageSymbol | undefined {
+): ProgramUnitSymbol | undefined {
     return symbols.find(symbol =>
         symbol.line === line &&
         column >= symbol.column &&
@@ -226,23 +344,20 @@ export function findPackageSymbolAt(
     );
 }
 
-function findPackageEnd(text: string, start: number, packageName: string): number {
+function findProgramUnitEnd(text: string, start: number, programUnitName: string): number {
     const remainder = text.slice(start);
     const slash = /^[ \t]*\/[ \t]*(?=\r?$)/m.exec(remainder);
-    const nextPackage = /^[ \t]*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?)?PACKAGE\s+(?:BODY\s+)?[A-Za-z]/im.exec(remainder);
-    const boundary = Math.min(
-        slash?.index ?? remainder.length,
-        nextPackage?.index ?? remainder.length
-    );
-    const packageText = remainder.slice(0, boundary);
-    const escapedName = packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const endPattern = new RegExp(`\\bEND\\s+${escapedName}\\s*;`, 'i');
-    const namedEnd = endPattern.exec(packageText);
+    const boundary = slash?.index ?? remainder.length;
+    const programUnitText = remainder.slice(0, boundary);
+    const escapedName = programUnitName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const endPattern = new RegExp(`\\bEND\\s+${escapedName}\\s*;`, 'ig');
+    const namedEnds = [...programUnitText.matchAll(endPattern)];
+    const namedEnd = namedEnds[namedEnds.length - 1];
     if (namedEnd) {
         return start + namedEnd.index;
     }
 
-    const unnamedEnds = [...packageText.matchAll(/\bEND\s*;/gi)];
+    const unnamedEnds = [...programUnitText.matchAll(/\bEND\s*;/gi)];
     const unnamedEnd = unnamedEnds[unnamedEnds.length - 1];
     return unnamedEnd ? start + unnamedEnd.index : start + boundary;
 }

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { PlsqlParser, PlsqlDefinition } from './plsqlParser';
-import { extractPackageSymbols, PackageSymbol } from './semanticNavigation';
+import { extractProgramUnitSymbols, ProgramUnitSymbol } from './semanticNavigation';
 
 /**
  * Represents a definition with its source file
@@ -8,7 +8,6 @@ import { extractPackageSymbols, PackageSymbol } from './semanticNavigation';
 export interface WorkspaceDefinition extends PlsqlDefinition {
     uri: vscode.Uri;
     fileName: string;
-    packageSymbol?: PackageSymbol;
 }
 
 /**
@@ -25,6 +24,10 @@ export class WorkspaceIndexer {
     
     // Map of file URI -> definitions in that file (for quick invalidation)
     private fileIndex: Map<string, WorkspaceDefinition[]> = new Map();
+
+    // Program-unit symbols are indexed separately because object type members are
+    // not part of the legacy definition parser.
+    private programUnitFileIndex: Map<string, ProgramUnitSymbol[]> = new Map();
     
     // File patterns to index
     private readonly FILE_PATTERNS = '**/*.{pks,pkb,sql,pls,plb,pck}';
@@ -115,27 +118,18 @@ export class WorkspaceIndexer {
             
             // Parse the file content
             const definitions = this.parser.parseText(text);
-            const packageSymbols = extractPackageSymbols({ uri: uri.toString(), text });
-            
-            if (definitions.length === 0) {
-                return;
-            }
+            const programUnitSymbols = extractProgramUnitSymbols({ uri: uri.toString(), text });
+            this.programUnitFileIndex.set(uri.toString(), programUnitSymbols);
             
             const fileName = uri.path.split('/').pop() || uri.fsPath;
             const workspaceDefinitions: WorkspaceDefinition[] = [];
             
             // Add each definition to the index
             for (const def of definitions) {
-                const packageSymbol = packageSymbols.find(symbol =>
-                    symbol.line === def.line &&
-                    symbol.name.toLowerCase() === def.name.toLowerCase() &&
-                    symbol.kind === def.type
-                );
                 const workspaceDef: WorkspaceDefinition = {
                     ...def,
                     uri: uri,
-                    fileName: fileName,
-                    packageSymbol
+                    fileName: fileName
                 };
                 
                 workspaceDefinitions.push(workspaceDef);
@@ -160,6 +154,8 @@ export class WorkspaceIndexer {
      * Remove all definitions from a file
      */
     public removeFileFromIndex(uriString: string): void {
+        this.programUnitFileIndex.delete(uriString);
+
         const fileDefs = this.fileIndex.get(uriString);
         if (!fileDefs) {
             return;
@@ -190,11 +186,12 @@ export class WorkspaceIndexer {
         return this.definitionIndex.get(key) || [];
     }
 
-    /** Find indexed package headers or direct members with the given name. */
-    public findPackageSymbols(symbolName: string): PackageSymbol[] {
-        return this.findDefinitions(symbolName)
-            .map(definition => definition.packageSymbol)
-            .filter((symbol): symbol is PackageSymbol => symbol !== undefined);
+    /** Find indexed program-unit headers or direct members with the given name. */
+    public findProgramUnitSymbols(symbolName: string): ProgramUnitSymbol[] {
+        const name = symbolName.toLowerCase();
+        return [...this.programUnitFileIndex.values()]
+            .flatMap(symbols => symbols)
+            .filter(symbol => symbol.name.toLowerCase() === name);
     }
     
     /**
@@ -279,6 +276,7 @@ export class WorkspaceIndexer {
     public clear(): void {
         this.definitionIndex.clear();
         this.fileIndex.clear();
+        this.programUnitFileIndex.clear();
         this.indexedFileCount = 0;
     }
     
