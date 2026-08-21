@@ -5,3 +5,11 @@ tsconfig.json
 **/*.map
 .gitignore
 node_modules/**
+.scratch/**
+.idea/**
+.agents/**
+.codex/**
+docs/**
+AGENTS.md
+CONTEXT.md
+out/**/*.test.js

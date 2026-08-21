@@ -1,12 +1,22 @@
 import * as vscode from 'vscode';
 import { PlsqlParser } from './plsqlParser';
 import { WorkspaceIndexer, WorkspaceDefinition } from './workspaceIndexer';
+import {
+    extractProgramUnitSymbols,
+    findNavigationTargets,
+    findSchemaTypeDefinitions,
+    findSchemaTypeReferenceAt,
+    findSymbolAt,
+    resolveObjectMethodCall,
+    ProgramUnitNavigationKind,
+    ProgramUnitSymbol
+} from './semanticNavigation';
 
 /**
  * Provides Go to Definition and Go to Implementation functionality for PL/SQL code
  * Searches both the current file and across the entire workspace
  */
-export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscode.ImplementationProvider {
+export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscode.DeclarationProvider, vscode.ImplementationProvider {
     
     private parser: PlsqlParser;
     private outputChannel: vscode.OutputChannel;
@@ -30,7 +40,27 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
+        const programUnitTargets = this.findProgramUnitLocations(document, position, 'definition');
+        if (programUnitTargets) {
+            return programUnitTargets;
+        }
+        const objectMethodTargets = this.findObjectMethodLocations(document, position);
+        if (objectMethodTargets) {
+            return objectMethodTargets;
+        }
+        const schemaTypeTargets = this.findSchemaTypeLocations(document, position);
+        if (schemaTypeTargets) {
+            return schemaTypeTargets;
+        }
         return this.findLocation(document, position, 'Definition');
+    }
+
+    public provideDeclaration(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        token: vscode.CancellationToken
+    ): vscode.ProviderResult<vscode.Declaration> {
+        return this.findProgramUnitLocations(document, position, 'declaration');
     }
     
     public provideImplementation(
@@ -38,7 +68,105 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
-        return this.findLocation(document, position, 'Implementation');
+        return this.findProgramUnitLocations(document, position, 'implementation');
+    }
+
+    private findProgramUnitLocations(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        navigation: ProgramUnitNavigationKind
+    ): vscode.LocationLink[] | undefined {
+        const documentSymbols = extractProgramUnitSymbols({
+            uri: document.uri.toString(),
+            text: document.getText()
+        });
+        const origin = findSymbolAt(documentSymbols, position.line, position.character);
+        if (!origin) {
+            return undefined;
+        }
+
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
+        const indexedSymbols = this.workspaceIndexer && canSearchWorkspace
+            ? this.workspaceIndexer.findProgramUnitSymbols(origin.name).filter(symbol => symbol.uri !== document.uri.toString())
+            : [];
+        const targets = findNavigationTargets(origin, [...documentSymbols, ...indexedSymbols], navigation);
+        const originRange = document.getWordRangeAtPosition(position, /\w+/);
+
+        this.outputChannel.appendLine(
+            `[${navigation}] Found ${targets.length} program-unit counterpart(s) for "${origin.name}"`
+        );
+        return targets.map(target => this.createProgramUnitLocationLink(target, originRange));
+    }
+
+    private findObjectMethodLocations(
+        document: vscode.TextDocument,
+        position: vscode.Position
+    ): vscode.LocationLink[] | undefined {
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
+        if (!this.workspaceIndexer || !canSearchWorkspace) {
+            return undefined;
+        }
+        const semanticDocument = {
+            uri: document.uri.toString(),
+            text: document.getText()
+        };
+        const currentSymbols = extractProgramUnitSymbols(semanticDocument);
+        const targets = resolveObjectMethodCall(
+            semanticDocument,
+            position.line,
+            position.character,
+            currentSymbols,
+            name => this.workspaceIndexer?.findProgramUnitSymbols(name) ?? []
+        );
+        if (targets.length === 0) {
+            return undefined;
+        }
+
+        const originRange = document.getWordRangeAtPosition(position, /\w+/);
+        this.outputChannel.appendLine(
+            `[Definition] Found ${targets.length} repository object method definition(s)`
+        );
+        return targets.map(target => this.createProgramUnitLocationLink(target, originRange));
+    }
+
+    private findSchemaTypeLocations(
+        document: vscode.TextDocument,
+        position: vscode.Position
+    ): vscode.LocationLink[] | undefined {
+        const typeName = findSchemaTypeReferenceAt(
+            { uri: document.uri.toString(), text: document.getText() },
+            position.line,
+            position.character
+        );
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
+        if (!typeName || !this.workspaceIndexer || !canSearchWorkspace) {
+            return undefined;
+        }
+
+        const currentSymbols = extractProgramUnitSymbols({
+            uri: document.uri.toString(),
+            text: document.getText()
+        });
+        const indexedSymbols = this.workspaceIndexer.findProgramUnitSymbols(typeName);
+        const definitions = findSchemaTypeDefinitions(typeName, [...currentSymbols, ...indexedSymbols]);
+        const uniqueDefinitions = [...new Map(definitions.map(definition => [
+            `${definition.uri}:${definition.line}:${definition.column}`,
+            definition
+        ])).values()];
+        if (uniqueDefinitions.length === 0) {
+            return undefined;
+        }
+
+        const originRange = document.getWordRangeAtPosition(position, /\w+/);
+        this.outputChannel.appendLine(
+            `[Definition] Found ${uniqueDefinitions.length} repository schema type definition(s) for "${typeName}"`
+        );
+        return uniqueDefinitions.map(definition =>
+            this.createProgramUnitLocationLink(definition, originRange)
+        );
     }
     
     private findLocation(
@@ -80,13 +208,14 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         
         // 2. Search across workspace ONLY for local files (not dbtools:// server files)
         //    Only for procedures and functions (cursors, parameters, variables are local-only)
-        const isLocalFile = document.uri.scheme === 'file';
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
         
         // Get configuration for package definition target
         const config = vscode.workspace.getConfiguration('sqlDevCompanion');
         const packageTarget = config.get<string>('packageDefinitionTarget', 'body');
         
-        if (this.workspaceIndexer && isLocalFile) {
+        if (this.workspaceIndexer && canSearchWorkspace) {
             // Get definitions from other files
             const workspaceDefs = this.workspaceIndexer.findDefinitionsExcludingFile(word, document.uri);
             
@@ -135,8 +264,8 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
                 locationLinks.push(this.createLocationLinkFromWorkspace(wsDef, originRange));
                 this.outputChannel.appendLine(`[${type}] Found in workspace: ${wsDef.type} "${wsDef.name}" in ${wsDef.fileName} at line ${wsDef.line + 1}`);
             }
-        } else if (!isLocalFile) {
-            this.outputChannel.appendLine(`[${type}] Skipping workspace search for dbtools file`);
+        } else if (!canSearchWorkspace) {
+            this.outputChannel.appendLine(`[${type}] Skipping workspace search for external document`);
         }
         
         if (locationLinks.length === 0) {
@@ -182,6 +311,22 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
             originSelectionRange: originRange,
             targetUri: definition.uri,
             targetRange: targetRange,
+            targetSelectionRange: targetRange
+        };
+    }
+
+    private createProgramUnitLocationLink(
+        symbol: ProgramUnitSymbol,
+        originRange: vscode.Range | undefined
+    ): vscode.LocationLink {
+        const targetStart = new vscode.Position(symbol.line, symbol.column);
+        const targetEnd = new vscode.Position(symbol.line, symbol.column + symbol.name.length);
+        const targetRange = new vscode.Range(targetStart, targetEnd);
+
+        return {
+            originSelectionRange: originRange,
+            targetUri: vscode.Uri.parse(symbol.uri),
+            targetRange,
             targetSelectionRange: targetRange
         };
     }

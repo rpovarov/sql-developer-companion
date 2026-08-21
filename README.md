@@ -20,12 +20,15 @@ Track and quickly reopen recently viewed database objects directly from the SQL 
 Oracle SQL Developer provides Go to Definition for database-stored objects, but it doesn't work for symbols defined within the same package or across local PL/SQL files in your workspace. This feature fills that gap.
 
 - **Intra-package navigation** — Ctrl+Click on a cursor, variable, procedure, or function reference within a package to jump to its definition in the same file — something Oracle's built-in navigation doesn't support.
-- **Local file navigation** — if you maintain a repository of PL/SQL source files (`.pks`, `.pkb`, `.sql`, `.pls`, `.plb`, `.pck`), the extension indexes them and provides cross-file Go to Definition across your workspace.
-- **Hover tooltips** — hover over any identifier to see its signature, cursor SQL, or variable type without leaving your current position.
+- **Local file navigation** — if you maintain a repository of PL/SQL source files (`.pks`, `.pkb`, `.sql`, `.pls`, `.plb`, `.pck`, `.tps`, `.tpb`), the extension indexes them and provides cross-file Go to Definition for packages, procedures, functions, tables, and schema types.
+- **Schema type references** — Ctrl+Click/F12 on a schema-level object or collection type used by a parameter, variable, return type, collection, subtype, or Oracle `TREAT(... AS type)` expression opens every matching local specification/body. When connected, VS Code also keeps the database definitions contributed by Oracle SQL Developer in the same results.
+- **Object method calls** — Ctrl+Click/F12 on `self.method(...)`, `variable.method(...)`, or `collection(index).method(...)` follows the statically declared receiver type to local method declarations and implementations. Schema collection element types, inherited methods, named arguments, defaults, and safely ambiguous overloads are supported; arbitrary dynamic call chains are not inferred.
+- **Spec/body navigation** — use Definition, Declaration, and Implementation on package and object type headers or direct members to move between repository specifications and bodies, including overloads.
+- **Hover tooltips** — hover over a recognized identifier to see its signature, cursor SQL, or variable type without leaving your current position.
 - **Package-aware** — navigate qualified references like `PKG_NAME.PROCEDURE` to the correct package body or spec, configurable via settings.
 - **Go to Local (Alt+F12)** — jump directly to a definition within the current file, skipping the VS Code picker.
 - **Context menu** — right-click to access "Go to Local Definition" in Oracle SQL files.
-- **Supported symbols** — cursors, procedures, functions, variables, parameters, types, tables, and packages.
+- **Supported symbols** — same-file parsing covers cursors, procedures, functions, variables, parameters, local types, tables, and packages. Cross-file navigation additionally covers schema-level `CREATE TYPE` specifications and bodies; package-local types remain local-only.
 
 ### Statement Highlighter
 

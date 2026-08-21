@@ -2,7 +2,7 @@
   "name": "sql-developer-companion",
   "displayName": "SQL Developer Companion",
   "description": "Companion utilities for Oracle SQL Developer in VS Code",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "publisher": "shmuel-appleton",
   "repository": {
     "type": "git",
@@ -37,10 +37,19 @@
   "activationEvents": [
     "onStartupFinished",
     "onLanguage:oracle-sql",
-    "workspaceContains:**/*.{pks,pkb,sql,pls,plb,pck}"
+    "workspaceContains:**/*.{pks,pkb,sql,pls,plb,pck,tps,tpb}"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "oracle-sql",
+        "extensions": [
+          ".tps",
+          ".tpb"
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "sqlDevCompanion.reopenRecent",
@@ -242,6 +251,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "test": "npm run compile && node --test out/features/plsqlNavigation/semanticNavigation.test.js out/features/plsqlNavigation/workspaceIndexer.test.js",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
