@@ -357,6 +357,137 @@ test('ambiguous same-arity implementations are all returned for Peek', () => {
     assert.deepEqual(findCounterparts(declaration, body).map(symbol => symbol.line), [1, 2, 3]);
 });
 
+test('compact parameter default does not prevent exact overload navigation', () => {
+    const specification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pks',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE submit_order(p_order_id NUMBER:=1);',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const body = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE submit_order(p_order_id NUMBER) IS BEGIN NULL; END;',
+            '    PROCEDURE submit_order(p_order_code VARCHAR2) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = specification.find(symbol => symbol.kind === 'procedure');
+
+    assert.ok(declaration);
+    assert.deepEqual(findCounterparts(declaration, body).map(symbol => symbol.line), [1]);
+});
+
+test('multiline parameter default does not prevent exact overload navigation', () => {
+    const specification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pks',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE submit_order(p_order_id NUMBER := make_default(',
+            '        1));',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const body = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE submit_order(p_order_id NUMBER) IS BEGIN NULL; END;',
+            '    PROCEDURE submit_order(p_order_code VARCHAR2) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = specification.find(symbol => symbol.kind === 'procedure');
+
+    assert.ok(declaration);
+    assert.deepEqual(findCounterparts(declaration, body).map(symbol => symbol.line), [1]);
+});
+
+test('incomplete member signature finds its only valid counterpart', () => {
+    const specification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pks',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE run('
+        ].join('\n')
+    });
+    const body = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE run(p_order_id NUMBER) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = specification.find(symbol => symbol.kind === 'procedure');
+
+    assert.ok(declaration);
+    assert.deepEqual(findCounterparts(declaration, body).map(symbol => symbol.line), [1]);
+});
+
+test('incomplete signature opens all overloads instead of exactly matching zero parameters', () => {
+    const incompleteSpecification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/incomplete_order_api.pks',
+        text: 'CREATE PACKAGE order_api AS\n    PROCEDURE run('
+    });
+    const completeSpecification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/complete_order_api.pks',
+        text: 'CREATE PACKAGE order_api AS\n    PROCEDURE run();\nEND order_api;'
+    });
+    const body = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE run() IS BEGIN NULL; END;',
+            '    PROCEDURE run(p_order_id NUMBER) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const incomplete = incompleteSpecification.find(symbol => symbol.kind === 'procedure');
+    const complete = completeSpecification.find(symbol => symbol.kind === 'procedure');
+
+    assert.ok(incomplete);
+    assert.ok(complete);
+    assert.deepEqual({
+        incomplete: findCounterparts(incomplete, body).map(symbol => symbol.line),
+        complete: findCounterparts(complete, body).map(symbol => symbol.line)
+    }, {
+        incomplete: [1, 2],
+        complete: [1]
+    });
+});
+
+test('incomplete public declaration excludes private-forward-declared implementations', () => {
+    const specification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pks',
+        text: 'CREATE PACKAGE order_api AS\n    PROCEDURE run('
+    });
+    const body = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE run(p_order_code VARCHAR2);',
+            '    PROCEDURE run(p_order_id NUMBER) IS BEGIN NULL; END;',
+            '    PROCEDURE run(p_order_code VARCHAR2) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = specification.find(symbol => symbol.kind === 'procedure');
+
+    assert.ok(declaration);
+    assert.deepEqual(findCounterparts(declaration, body).map(symbol => symbol.line), [2]);
+});
+
 test('symbol at cursor is found only while the cursor is on its name', () => {
     const symbols = extractProgramUnitSymbols({
         uri: 'file:///workspace/order_api.pks',
@@ -429,6 +560,29 @@ test('private forward declaration navigates only to its local implementation', (
     assert.equal(findNavigationTargets(declaration, symbols, 'definition')[0], implementation);
     assert.equal(findNavigationTargets(implementation, symbols, 'definition')[0], declaration);
     assert.deepEqual(findNavigationTargets(declaration, symbols, 'declaration'), []);
+});
+
+test('incomplete private forward declaration opens all local implementations', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE run(',
+            '    PROCEDURE run IS BEGIN NULL; END;',
+            '    PROCEDURE run(p_order_id NUMBER) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = symbols.find(symbol =>
+        symbol.kind === 'procedure' && symbol.line === 1
+    );
+
+    assert.ok(declaration);
+    assert.deepEqual(
+        findNavigationTargets(declaration, symbols, 'implementation').map(symbol => symbol.line),
+        [2, 3]
+    );
 });
 
 test('private overload is not presented as a public specification counterpart', () => {

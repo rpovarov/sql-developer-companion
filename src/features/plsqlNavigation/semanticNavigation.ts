@@ -16,6 +16,7 @@ export interface ProgramUnitSymbol {
     modifiers: ProgramUnitModifier[];
     signature: string;
     parameterCount: number;
+    signatureComplete: boolean;
     isImplementation?: boolean;
     side: ProgramUnitSide;
     line: number;
@@ -49,6 +50,7 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
             modifiers: [],
             signature: '',
             parameterCount: 0,
+            signatureComplete: true,
             side: match[2] ? 'body' : 'specification',
             line: position.line,
             column: position.column
@@ -87,6 +89,7 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
                 modifiers,
                 signature: parameters.signature,
                 parameterCount: parameters.count,
+                signatureComplete: parameters.complete,
                 isImplementation: match[2] ? header?.bodyStart !== undefined : false,
                 side: match[2] ? 'body' : 'specification',
                 line: memberPosition.line,
@@ -140,13 +143,16 @@ function findMemberHeader(
     return undefined;
 }
 
-function extractParameterSignature(text: string, start: number): { signature: string; count: number } {
+function extractParameterSignature(
+    text: string,
+    start: number
+): { signature: string; count: number; complete: boolean } {
     let opening = start;
     while (/\s/.test(text[opening] || '')) {
         opening++;
     }
     if (text[opening] !== '(') {
-        return { signature: '', count: 0 };
+        return { signature: '', count: 0, complete: true };
     }
 
     let depth = 1;
@@ -160,13 +166,14 @@ function extractParameterSignature(text: string, start: number): { signature: st
         closing++;
     }
     if (depth !== 0) {
-        return { signature: '', count: 0 };
+        return { signature: '', count: 0, complete: false };
     }
 
     const parameters = splitParameters(text.slice(opening + 1, closing - 1));
     return {
         signature: parameters.map(normalizeParameter).join(','),
-        count: parameters.length
+        count: parameters.length,
+        complete: true
     };
 }
 
@@ -193,7 +200,7 @@ function splitParameters(text: string): string[] {
 }
 
 function normalizeParameter(parameter: string): string {
-    const withoutDefault = parameter.replace(/\s+(?:DEFAULT|:=)\s+.*$/i, '');
+    const withoutDefault = parameter.replace(/(?:\s+DEFAULT\b|\s*:=)\s*.*$/is, '');
     return withoutDefault
         .trim()
         .toUpperCase()
@@ -307,6 +314,7 @@ export function findCounterparts(
     const sameMember = candidates.filter(candidate =>
         candidate !== origin &&
         candidate.kind === origin.kind &&
+        candidate.signatureComplete &&
         candidate.programUnitKind === origin.programUnitKind &&
         candidate.programUnitName.toLowerCase() === origin.programUnitName.toLowerCase() &&
         candidate.name.toLowerCase() === origin.name.toLowerCase() &&
@@ -319,9 +327,14 @@ export function findCounterparts(
             candidate.side === 'body' &&
             candidate.isImplementation === true
         );
-        const exact = localImplementations.filter(candidate => candidate.signature === origin.signature);
-        if (exact.length > 0 || origin.signature === '') {
+        const exact = origin.signatureComplete
+            ? localImplementations.filter(candidate => candidate.signature === origin.signature)
+            : [];
+        if (exact.length > 0 || (origin.signatureComplete && origin.signature === '')) {
             return exact;
+        }
+        if (!origin.signatureComplete) {
+            return localImplementations;
         }
         const sameArity = localImplementations.filter(
             candidate => candidate.parameterCount === origin.parameterCount
@@ -337,9 +350,24 @@ export function findCounterparts(
         candidate.side === oppositeSide &&
         (!isMember || candidate.isImplementation !== origin.isImplementation)
     );
-    const exact = matchingSymbols.filter(candidate => candidate.signature === origin.signature);
+    const exact = origin.signatureComplete
+        ? matchingSymbols.filter(candidate => candidate.signature === origin.signature)
+        : [];
     if (exact.length > 0) {
         return exact;
+    }
+
+    const fallbackSymbols = matchingSymbols.filter(candidate =>
+        origin.side !== 'specification' ||
+        !sameMember.some(local =>
+            local.uri === candidate.uri &&
+            local.side === 'body' &&
+            local.isImplementation === false &&
+            local.signature === candidate.signature
+        )
+    );
+    if (!origin.signatureComplete) {
+        return fallbackSymbols;
     }
 
     if (isMember && origin.side === 'body' && origin.isImplementation === true) {
@@ -367,15 +395,6 @@ export function findCounterparts(
     if (origin.signature === '') {
         return [];
     }
-    const fallbackSymbols = matchingSymbols.filter(candidate =>
-        origin.side !== 'specification' ||
-        !sameMember.some(local =>
-            local.uri === candidate.uri &&
-            local.side === 'body' &&
-            local.isImplementation === false &&
-            local.signature === candidate.signature
-        )
-    );
     const sameArity = fallbackSymbols.filter(candidate => candidate.parameterCount === origin.parameterCount);
     if (sameArity.length === 1) {
         return sameArity;
