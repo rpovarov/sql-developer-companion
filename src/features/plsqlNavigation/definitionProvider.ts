@@ -65,10 +65,6 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         navigation: ProgramUnitNavigationKind
     ): vscode.LocationLink[] | undefined {
-        if (document.uri.scheme !== 'file') {
-            return undefined;
-        }
-
         const documentSymbols = extractProgramUnitSymbols({
             uri: document.uri.toString(),
             text: document.getText()
@@ -78,7 +74,9 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
             return undefined;
         }
 
-        const indexedSymbols = this.workspaceIndexer
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
+        const indexedSymbols = this.workspaceIndexer && canSearchWorkspace
             ? this.workspaceIndexer.findProgramUnitSymbols(origin.name).filter(symbol => symbol.uri !== document.uri.toString())
             : [];
         const targets = findNavigationTargets(origin, [...documentSymbols, ...indexedSymbols], navigation);
@@ -129,13 +127,14 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         
         // 2. Search across workspace ONLY for local files (not dbtools:// server files)
         //    Only for procedures and functions (cursors, parameters, variables are local-only)
-        const isLocalFile = document.uri.scheme === 'file';
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
         
         // Get configuration for package definition target
         const config = vscode.workspace.getConfiguration('sqlDevCompanion');
         const packageTarget = config.get<string>('packageDefinitionTarget', 'body');
         
-        if (this.workspaceIndexer && isLocalFile) {
+        if (this.workspaceIndexer && canSearchWorkspace) {
             // Get definitions from other files
             const workspaceDefs = this.workspaceIndexer.findDefinitionsExcludingFile(word, document.uri);
             
@@ -184,8 +183,8 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
                 locationLinks.push(this.createLocationLinkFromWorkspace(wsDef, originRange));
                 this.outputChannel.appendLine(`[${type}] Found in workspace: ${wsDef.type} "${wsDef.name}" in ${wsDef.fileName} at line ${wsDef.line + 1}`);
             }
-        } else if (!isLocalFile) {
-            this.outputChannel.appendLine(`[${type}] Skipping workspace search for dbtools file`);
+        } else if (!canSearchWorkspace) {
+            this.outputChannel.appendLine(`[${type}] Skipping workspace search for external document`);
         }
         
         if (locationLinks.length === 0) {

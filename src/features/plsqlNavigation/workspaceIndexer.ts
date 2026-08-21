@@ -33,7 +33,6 @@ export class WorkspaceIndexer {
     private readonly FILE_PATTERNS = '**/*.{pks,pkb,sql,pls,plb,pck}';
     
     private isIndexing = false;
-    private indexedFileCount = 0;
     private disposed = false;
     
     constructor(outputChannel: vscode.OutputChannel) {
@@ -83,10 +82,26 @@ export class WorkspaceIndexer {
                     // Silently continue on individual file errors
                 }
             }
+
+            // Open documents are authoritative, including documents that were
+            // already dirty before activation or changed during initial indexing.
+            for (const document of vscode.workspace.textDocuments) {
+                if (this.disposed) {
+                    break;
+                }
+                if (this.isPlsqlFile(document.uri)) {
+                    try {
+                        this.indexDocument(document);
+                    } catch (error) {
+                        // Keep failures isolated to the current document.
+                    }
+                }
+            }
             
             const elapsed = Date.now() - startTime;
             if (!this.disposed) {
-                this.outputChannel.appendLine(`[Indexer] Indexed ${this.indexedFileCount} files with ${this.definitionIndex.size} unique symbols in ${elapsed}ms`);
+                const stats = this.getStats();
+                this.outputChannel.appendLine(`[Indexer] Indexed ${stats.fileCount} files with ${stats.symbolCount} unique symbols in ${elapsed}ms`);
             }
             
         } catch (error) {
@@ -100,6 +115,9 @@ export class WorkspaceIndexer {
      * Index a single file
      */
     public async indexFile(uri: vscode.Uri): Promise<void> {
+        if (!this.isPlsqlFile(uri)) {
+            return;
+        }
         try {
             // Read file content directly instead of opening as document
             // This avoids "Canceled" errors from openTextDocument
@@ -107,47 +125,77 @@ export class WorkspaceIndexer {
             try {
                 fileContent = await vscode.workspace.fs.readFile(uri);
             } catch (readError) {
-                // File might not exist, be locked, or operation canceled - skip silently
+                this.reportIndexError(uri, readError);
                 return;
             }
             
             const text = Buffer.from(fileContent).toString('utf8');
-            
-            // Remove old definitions from this file
-            this.removeFileFromIndex(uri.toString());
-            
-            // Parse the file content
-            const definitions = this.parser.parseText(text);
-            const programUnitSymbols = extractProgramUnitSymbols({ uri: uri.toString(), text });
-            this.programUnitFileIndex.set(uri.toString(), programUnitSymbols);
-            
-            const fileName = uri.path.split('/').pop() || uri.fsPath;
-            const workspaceDefinitions: WorkspaceDefinition[] = [];
-            
-            // Add each definition to the index
-            for (const def of definitions) {
-                const workspaceDef: WorkspaceDefinition = {
-                    ...def,
-                    uri: uri,
-                    fileName: fileName
-                };
-                
-                workspaceDefinitions.push(workspaceDef);
-                
-                // Add to definition index (by lowercase name)
-                const key = def.name.toLowerCase();
-                const existing = this.definitionIndex.get(key) || [];
-                existing.push(workspaceDef);
-                this.definitionIndex.set(key, existing);
+            if (this.disposed) {
+                return;
             }
-            
-            // Store in file index
-            this.fileIndex.set(uri.toString(), workspaceDefinitions);
-            this.indexedFileCount++;
+            const openDocument = vscode.workspace.textDocuments.find(
+                document => document.uri.toString() === uri.toString()
+            );
+            if (openDocument) {
+                this.indexDocument(openDocument);
+                return;
+            }
+            this.indexText(uri, text);
             
         } catch (error) {
-            // Silently ignore any errors during indexing
+            this.reportIndexError(uri, error);
         }
+    }
+
+    /** Replace saved symbols with the current contents of an open document. */
+    public indexDocument(document: vscode.TextDocument): void {
+        if (!this.isPlsqlFile(document.uri)) {
+            return;
+        }
+        try {
+            this.indexText(document.uri, document.getText());
+        } catch (error) {
+            this.reportIndexError(document.uri, error);
+        }
+    }
+
+    private reportIndexError(uri: vscode.Uri, error: unknown): void {
+        const message = error instanceof Error ? error.message : String(error);
+        this.outputChannel.appendLine(`[Indexer] Failed to index ${uri.fsPath}: ${message}`);
+    }
+
+    private async indexCurrentContent(uri: vscode.Uri): Promise<void> {
+        const openDocument = vscode.workspace.textDocuments.find(
+            document => document.uri.toString() === uri.toString()
+        );
+        if (openDocument) {
+            this.indexDocument(openDocument);
+        } else {
+            await this.indexFile(uri);
+        }
+    }
+
+    private indexText(uri: vscode.Uri, text: string): void {
+        const definitions = this.parser.parseText(text);
+        const programUnitSymbols = extractProgramUnitSymbols({ uri: uri.toString(), text });
+        const fileName = uri.path.split('/').pop() || uri.fsPath;
+        const workspaceDefinitions: WorkspaceDefinition[] = definitions.map(definition => ({
+            ...definition,
+            uri,
+            fileName
+        }));
+
+        this.removeFileFromIndex(uri.toString());
+        this.programUnitFileIndex.set(uri.toString(), programUnitSymbols);
+
+        for (const definition of workspaceDefinitions) {
+            const key = definition.name.toLowerCase();
+            const existing = this.definitionIndex.get(key) || [];
+            existing.push(definition);
+            this.definitionIndex.set(key, existing);
+        }
+
+        this.fileIndex.set(uri.toString(), workspaceDefinitions);
     }
     
     /**
@@ -277,7 +325,6 @@ export class WorkspaceIndexer {
         this.definitionIndex.clear();
         this.fileIndex.clear();
         this.programUnitFileIndex.clear();
-        this.indexedFileCount = 0;
     }
     
     /**
@@ -289,17 +336,24 @@ export class WorkspaceIndexer {
         
         watcher.onDidCreate(async (uri) => {
             this.outputChannel.appendLine(`[Indexer] File created: ${uri.fsPath}`);
-            await this.indexFile(uri);
+            await this.indexCurrentContent(uri);
         });
         
         watcher.onDidChange(async (uri) => {
             this.outputChannel.appendLine(`[Indexer] File changed: ${uri.fsPath}`);
-            await this.indexFile(uri);
+            await this.indexCurrentContent(uri);
         });
         
         watcher.onDidDelete((uri) => {
             this.outputChannel.appendLine(`[Indexer] File deleted: ${uri.fsPath}`);
-            this.removeFileFromIndex(uri.toString());
+            const openDocument = vscode.workspace.textDocuments.find(
+                document => document.uri.toString() === uri.toString()
+            );
+            if (openDocument) {
+                this.indexDocument(openDocument);
+            } else {
+                this.removeFileFromIndex(uri.toString());
+            }
         });
         
         context.subscriptions.push(watcher);
@@ -309,6 +363,31 @@ export class WorkspaceIndexer {
             vscode.workspace.onDidSaveTextDocument(async (document) => {
                 if (this.isPlsqlFile(document.uri)) {
                     this.outputChannel.appendLine(`[Indexer] Document saved: ${document.uri.fsPath}`);
+                    this.indexDocument(document);
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.workspace.onDidOpenTextDocument((document) => {
+                if (this.isPlsqlFile(document.uri)) {
+                    this.indexDocument(document);
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeTextDocument((event) => {
+                if (this.isPlsqlFile(event.document.uri)) {
+                    this.indexDocument(event.document);
+                }
+            })
+        );
+
+        context.subscriptions.push(
+            vscode.workspace.onDidCloseTextDocument(async (document) => {
+                if (this.isPlsqlFile(document.uri)) {
+                    this.removeFileFromIndex(document.uri.toString());
                     await this.indexFile(document.uri);
                 }
             })
@@ -319,6 +398,9 @@ export class WorkspaceIndexer {
      * Check if a URI is a PL/SQL file
      */
     private isPlsqlFile(uri: vscode.Uri): boolean {
+        if (uri.scheme !== 'file' || !vscode.workspace.getWorkspaceFolder(uri)) {
+            return false;
+        }
         const ext = uri.fsPath.toLowerCase();
         return ext.endsWith('.pks') || 
                ext.endsWith('.pkb') || 
