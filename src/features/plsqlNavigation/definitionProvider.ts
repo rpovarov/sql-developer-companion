@@ -1,12 +1,19 @@
 import * as vscode from 'vscode';
 import { PlsqlParser } from './plsqlParser';
 import { WorkspaceIndexer, WorkspaceDefinition } from './workspaceIndexer';
+import {
+    extractPackageSymbols,
+    findPackageNavigationTargets,
+    findPackageSymbolAt,
+    PackageNavigationKind,
+    PackageSymbol
+} from './semanticNavigation';
 
 /**
  * Provides Go to Definition and Go to Implementation functionality for PL/SQL code
  * Searches both the current file and across the entire workspace
  */
-export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscode.ImplementationProvider {
+export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscode.DeclarationProvider, vscode.ImplementationProvider {
     
     private parser: PlsqlParser;
     private outputChannel: vscode.OutputChannel;
@@ -30,7 +37,19 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
+        const packageTargets = this.findPackageLocations(document, position, 'definition');
+        if (packageTargets) {
+            return packageTargets;
+        }
         return this.findLocation(document, position, 'Definition');
+    }
+
+    public provideDeclaration(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        token: vscode.CancellationToken
+    ): vscode.ProviderResult<vscode.Declaration> {
+        return this.findPackageLocations(document, position, 'declaration');
     }
     
     public provideImplementation(
@@ -38,7 +57,37 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         position: vscode.Position,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Definition | vscode.LocationLink[]> {
-        return this.findLocation(document, position, 'Implementation');
+        return this.findPackageLocations(document, position, 'implementation');
+    }
+
+    private findPackageLocations(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        navigation: PackageNavigationKind
+    ): vscode.LocationLink[] | undefined {
+        if (document.uri.scheme !== 'file') {
+            return undefined;
+        }
+
+        const documentSymbols = extractPackageSymbols({
+            uri: document.uri.toString(),
+            text: document.getText()
+        });
+        const origin = findPackageSymbolAt(documentSymbols, position.line, position.character);
+        if (!origin) {
+            return undefined;
+        }
+
+        const indexedSymbols = this.workspaceIndexer
+            ? this.workspaceIndexer.findPackageSymbols(origin.name).filter(symbol => symbol.uri !== document.uri.toString())
+            : [];
+        const targets = findPackageNavigationTargets(origin, [...documentSymbols, ...indexedSymbols], navigation);
+        const originRange = document.getWordRangeAtPosition(position, /\w+/);
+
+        this.outputChannel.appendLine(
+            `[${navigation}] Found ${targets.length} package counterpart(s) for "${origin.name}"`
+        );
+        return targets.map(target => this.createPackageLocationLink(target, originRange));
     }
     
     private findLocation(
@@ -182,6 +231,22 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
             originSelectionRange: originRange,
             targetUri: definition.uri,
             targetRange: targetRange,
+            targetSelectionRange: targetRange
+        };
+    }
+
+    private createPackageLocationLink(
+        symbol: PackageSymbol,
+        originRange: vscode.Range | undefined
+    ): vscode.LocationLink {
+        const targetStart = new vscode.Position(symbol.line, symbol.column);
+        const targetEnd = new vscode.Position(symbol.line, symbol.column + symbol.name.length);
+        const targetRange = new vscode.Range(targetStart, targetEnd);
+
+        return {
+            originSelectionRange: originRange,
+            targetUri: vscode.Uri.parse(symbol.uri),
+            targetRange,
             targetSelectionRange: targetRange
         };
     }

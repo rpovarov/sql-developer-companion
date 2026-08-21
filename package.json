@@ -242,6 +242,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "test": "npm run compile && node --test out/features/plsqlNavigation/semanticNavigation.test.js",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {

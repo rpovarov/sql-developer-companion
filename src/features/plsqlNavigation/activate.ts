@@ -19,7 +19,9 @@ export function activatePlsqlNavigation(context: vscode.ExtensionContext, output
     // Register Definition Provider
     const definitionProvider = new PlsqlDefinitionProvider(outputChannel, workspaceIndexer);
     context.subscriptions.push(
-        vscode.languages.registerDefinitionProvider(PLSQL_SELECTOR, definitionProvider)
+        vscode.languages.registerDefinitionProvider(PLSQL_SELECTOR, definitionProvider),
+        vscode.languages.registerDeclarationProvider(PLSQL_SELECTOR, definitionProvider),
+        vscode.languages.registerImplementationProvider(PLSQL_SELECTOR, definitionProvider)
     );
 
     // Register Hover Provider

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { PlsqlParser, PlsqlDefinition } from './plsqlParser';
+import { extractPackageSymbols, PackageSymbol } from './semanticNavigation';
 
 /**
  * Represents a definition with its source file
@@ -7,6 +8,7 @@ import { PlsqlParser, PlsqlDefinition } from './plsqlParser';
 export interface WorkspaceDefinition extends PlsqlDefinition {
     uri: vscode.Uri;
     fileName: string;
+    packageSymbol?: PackageSymbol;
 }
 
 /**
@@ -113,6 +115,7 @@ export class WorkspaceIndexer {
             
             // Parse the file content
             const definitions = this.parser.parseText(text);
+            const packageSymbols = extractPackageSymbols({ uri: uri.toString(), text });
             
             if (definitions.length === 0) {
                 return;
@@ -123,10 +126,16 @@ export class WorkspaceIndexer {
             
             // Add each definition to the index
             for (const def of definitions) {
+                const packageSymbol = packageSymbols.find(symbol =>
+                    symbol.line === def.line &&
+                    symbol.name.toLowerCase() === def.name.toLowerCase() &&
+                    symbol.kind === def.type
+                );
                 const workspaceDef: WorkspaceDefinition = {
                     ...def,
                     uri: uri,
-                    fileName: fileName
+                    fileName: fileName,
+                    packageSymbol
                 };
                 
                 workspaceDefinitions.push(workspaceDef);
@@ -179,6 +188,13 @@ export class WorkspaceIndexer {
     public findDefinitions(symbolName: string): WorkspaceDefinition[] {
         const key = symbolName.toLowerCase();
         return this.definitionIndex.get(key) || [];
+    }
+
+    /** Find indexed package headers or direct members with the given name. */
+    public findPackageSymbols(symbolName: string): PackageSymbol[] {
+        return this.findDefinitions(symbolName)
+            .map(definition => definition.packageSymbol)
+            .filter((symbol): symbol is PackageSymbol => symbol !== undefined);
     }
     
     /**
