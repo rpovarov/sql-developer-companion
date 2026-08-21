@@ -8,6 +8,7 @@
 - Added repository Go to Definition for schema-level object and collection type references, returning every local specification/body alongside any database definitions contributed by Oracle SQL Developer.
 - Recognized schema type targets in Oracle `TREAT(... AS type)` expressions, including nested expressions and qualified type names.
 - Added PL/SQL indexing and language association for `.tps` and `.tpb` type files.
+- Added receiver-aware repository navigation for Oracle object method calls on `self`, declared variables/parameters/attributes, and schema collection elements, including inherited methods and overload filtering.
 - Added live workspace indexing so unsaved repository documents immediately replace saved symbol locations and signatures.
 - Added automated coverage for semantic matching, incremental indexing, malformed input, cancellation, and workspace boundaries.
 

@@ -4,10 +4,30 @@ import {
     extractProgramUnitSymbols,
     findCounterparts,
     findNavigationTargets,
+    resolveObjectMethodCall,
     findSchemaTypeDefinitions,
     findSchemaTypeReferenceAt,
     findSymbolAt
 } from './semanticNavigation';
+
+function resolveMethodAt(
+    document: { uri: string; text: string },
+    line: number,
+    methodName: string,
+    allSymbols: ReturnType<typeof extractProgramUnitSymbols>
+) {
+    const currentSymbols = allSymbols.filter(symbol => symbol.uri === document.uri);
+    const sourceLine = document.text.split('\n')[line];
+    return resolveObjectMethodCall(
+        document,
+        line,
+        sourceLine.indexOf(methodName) + 2,
+        currentSymbols,
+        name => allSymbols.filter(symbol =>
+            symbol.name.toLowerCase() === name.toLowerCase()
+        )
+    );
+}
 
 test('package specification header finds its body in another document', () => {
     const specification = extractProgramUnitSymbols({
@@ -897,4 +917,199 @@ test('unnamed member endings still exclude nested subprograms and keep following
         { kind: 'procedure', name: 'submit_order' },
         { kind: 'function', name: 'order_total' }
     ]);
+});
+
+test('object method calls resolve self, a local variable, and a collection element', () => {
+    const mappingDocument = {
+        uri: 'file:///workspace/T_PRODUCT_MAPPING.sql',
+        text: [
+            'CREATE TYPE t_o2_product_table AS TABLE OF t_o2_product;',
+            '/',
+            'CREATE TYPE t_product_mapping AS OBJECT (',
+            '    o2_prod_tab t_o2_product_table,',
+            '    MEMBER FUNCTION get_product_segment(p_key VARCHAR2) RETURN VARCHAR2,',
+            '    MEMBER PROCEDURE add_product(p_product t_o2_product)',
+            ');',
+            '/',
+            'CREATE TYPE BODY t_product_mapping AS',
+            '    MEMBER PROCEDURE add_product(p_product t_o2_product) IS',
+            '        l_product t_o2_product;',
+            '    BEGIN',
+            '        l_product.product_segment := self.get_product_segment(l_product.parent_key);',
+            '        IF o2_prod_tab(i).effective_total_price(p_with_vat => 1)',
+            '            = l_product.effective_total_price(p_with_vat => 1) THEN NULL; END IF;',
+            '    END;',
+            '    MEMBER FUNCTION get_product_segment(p_key VARCHAR2) RETURN VARCHAR2 IS',
+            '    BEGIN RETURN NULL; END;',
+            'END;',
+            '/'
+        ].join('\n')
+    };
+    const productDocument = {
+        uri: 'file:///workspace/T_O2_PRODUCT.sql',
+        text: [
+            'CREATE TYPE t_o2_product AS OBJECT (',
+            '    MEMBER FUNCTION effective_total_price(p_with_vat NUMBER) RETURN NUMBER',
+            ');',
+            '/',
+            'CREATE TYPE BODY t_o2_product AS',
+            '    MEMBER FUNCTION effective_total_price(p_with_vat NUMBER) RETURN NUMBER IS',
+            '    BEGIN RETURN 0; END;',
+            'END;',
+            '/'
+        ].join('\n')
+    };
+    const allSymbols = [
+        ...extractProgramUnitSymbols(mappingDocument),
+        ...extractProgramUnitSymbols(productDocument)
+    ];
+
+    assert.deepEqual({
+        self: resolveMethodAt(mappingDocument, 12, 'get_product_segment', allSymbols)
+            .map(symbol => [symbol.programUnitName, symbol.side, symbol.line]),
+        collection: resolveMethodAt(mappingDocument, 13, 'effective_total_price', allSymbols)
+            .map(symbol => [symbol.programUnitName, symbol.side, symbol.line]),
+        local: resolveMethodAt(mappingDocument, 14, 'effective_total_price', allSymbols)
+            .map(symbol => [symbol.programUnitName, symbol.side, symbol.line])
+    }, {
+        self: [
+            ['t_product_mapping', 'specification', 4],
+            ['t_product_mapping', 'body', 16]
+        ],
+        collection: [
+            ['t_o2_product', 'specification', 1],
+            ['t_o2_product', 'body', 5]
+        ],
+        local: [
+            ['t_o2_product', 'specification', 1],
+            ['t_o2_product', 'body', 5]
+        ]
+    });
+});
+
+test('object method call resolves a parameter receiver', () => {
+    const caller = {
+        uri: 'file:///workspace/caller.sql',
+        text: [
+            'CREATE TYPE caller AS OBJECT (MEMBER PROCEDURE run(p_product t_o2_product));',
+            '/',
+            'CREATE TYPE BODY caller AS',
+            '    MEMBER PROCEDURE run(p_product IN t_o2_product) IS',
+            '    BEGIN',
+            '        p_product.effective_total_price(p_with_vat => 1);',
+            '    END;',
+            'END;',
+            '/'
+        ].join('\n')
+    };
+    const product = {
+        uri: 'file:///workspace/product.sql',
+        text: [
+            'CREATE TYPE t_o2_product AS OBJECT (',
+            '    MEMBER FUNCTION effective_total_price(p_with_vat NUMBER) RETURN NUMBER',
+            ');',
+            '/'
+        ].join('\n')
+    };
+    const allSymbols = [
+        ...extractProgramUnitSymbols(caller),
+        ...extractProgramUnitSymbols(product)
+    ];
+
+    assert.deepEqual(
+        resolveMethodAt(caller, 5, 'effective_total_price', allSymbols).map(symbol => symbol.programUnitName),
+        ['t_o2_product']
+    );
+});
+
+test('object method call follows an UNDER relationship to an inherited member', () => {
+    const caller = {
+        uri: 'file:///workspace/caller.sql',
+        text: [
+            'CREATE TYPE caller AS OBJECT (MEMBER PROCEDURE run);',
+            '/',
+            'CREATE TYPE BODY caller AS',
+            '    MEMBER PROCEDURE run IS',
+            '        l_product t_discount_product;',
+            '    BEGIN',
+            '        l_product.effective_total_price(p_with_vat => 1);',
+            '    END;',
+            'END;',
+            '/'
+        ].join('\n')
+    };
+    const base = {
+        uri: 'file:///workspace/base.sql',
+        text: [
+            'CREATE TYPE t_o2_product AS OBJECT (',
+            '    MEMBER FUNCTION effective_total_price(p_with_vat NUMBER) RETURN NUMBER',
+            ');',
+            '/'
+        ].join('\n')
+    };
+    const child = {
+        uri: 'file:///workspace/child.sql',
+        text: 'CREATE TYPE t_discount_product UNDER t_o2_product (discount NUMBER);\n/'
+    };
+    const allSymbols = [caller, base, child].flatMap(extractProgramUnitSymbols);
+
+    assert.deepEqual(
+        resolveMethodAt(caller, 6, 'effective_total_price', allSymbols).map(symbol => symbol.programUnitName),
+        ['t_o2_product']
+    );
+});
+
+test('named arguments select an overload while positional ambiguity remains available for Peek', () => {
+    const caller = {
+        uri: 'file:///workspace/caller.sql',
+        text: [
+            'CREATE TYPE caller AS OBJECT (MEMBER PROCEDURE run);',
+            '/',
+            'CREATE TYPE BODY caller AS',
+            '    MEMBER PROCEDURE run IS l_target target_type;',
+            '    BEGIN',
+            '        l_target.calculate(p_code => nested_value(1, 2));',
+            '        l_target.calculate(l_value);',
+            '    END;',
+            'END;',
+            '/'
+        ].join('\n')
+    };
+    const target = {
+        uri: 'file:///workspace/target.sql',
+        text: [
+            'CREATE TYPE target_type AS OBJECT (',
+            '    MEMBER FUNCTION calculate(p_id NUMBER) RETURN NUMBER,',
+            '    MEMBER FUNCTION calculate(p_code VARCHAR2, p_mode NUMBER DEFAULT 1) RETURN NUMBER',
+            ');',
+            '/'
+        ].join('\n')
+    };
+    const allSymbols = [caller, target].flatMap(extractProgramUnitSymbols);
+
+    assert.deepEqual({
+        named: resolveMethodAt(caller, 5, 'calculate', allSymbols).map(symbol => symbol.signature),
+        ambiguous: resolveMethodAt(caller, 6, 'calculate', allSymbols).map(symbol => symbol.signature)
+    }, {
+        named: ['VARCHAR2,NUMBER'],
+        ambiguous: ['NUMBER', 'VARCHAR2,NUMBER']
+    });
+});
+
+test('comments, strings, attributes, and unknown receivers are not object method calls', () => {
+    const lines = [
+        '-- l_product.effective_total_price(p_with_vat => 1);',
+        "l_text := 'l_product.effective_total_price(p_with_vat => 1)';",
+        'l_product.effective_total_price;',
+        'unknown.effective_total_price(p_with_vat => 1);'
+    ];
+    const document = { uri: 'file:///workspace/caller.sql', text: lines.join('\n') };
+
+    assert.deepEqual(lines.map((line, index) => resolveObjectMethodCall(
+        document,
+        index,
+        line.indexOf('effective_total_price') + 2,
+        [],
+        () => []
+    )), [[], [], [], []]);
 });

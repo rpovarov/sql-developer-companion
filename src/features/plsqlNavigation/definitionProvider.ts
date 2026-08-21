@@ -7,6 +7,7 @@ import {
     findSchemaTypeDefinitions,
     findSchemaTypeReferenceAt,
     findSymbolAt,
+    resolveObjectMethodCall,
     ProgramUnitNavigationKind,
     ProgramUnitSymbol
 } from './semanticNavigation';
@@ -42,6 +43,10 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         const programUnitTargets = this.findProgramUnitLocations(document, position, 'definition');
         if (programUnitTargets) {
             return programUnitTargets;
+        }
+        const objectMethodTargets = this.findObjectMethodLocations(document, position);
+        if (objectMethodTargets) {
+            return objectMethodTargets;
         }
         const schemaTypeTargets = this.findSchemaTypeLocations(document, position);
         if (schemaTypeTargets) {
@@ -90,6 +95,38 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
 
         this.outputChannel.appendLine(
             `[${navigation}] Found ${targets.length} program-unit counterpart(s) for "${origin.name}"`
+        );
+        return targets.map(target => this.createProgramUnitLocationLink(target, originRange));
+    }
+
+    private findObjectMethodLocations(
+        document: vscode.TextDocument,
+        position: vscode.Position
+    ): vscode.LocationLink[] | undefined {
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
+        if (!this.workspaceIndexer || !canSearchWorkspace) {
+            return undefined;
+        }
+        const semanticDocument = {
+            uri: document.uri.toString(),
+            text: document.getText()
+        };
+        const currentSymbols = extractProgramUnitSymbols(semanticDocument);
+        const targets = resolveObjectMethodCall(
+            semanticDocument,
+            position.line,
+            position.character,
+            currentSymbols,
+            name => this.workspaceIndexer?.findProgramUnitSymbols(name) ?? []
+        );
+        if (targets.length === 0) {
+            return undefined;
+        }
+
+        const originRange = document.getWordRangeAtPosition(position, /\w+/);
+        this.outputChannel.appendLine(
+            `[Definition] Found ${targets.length} repository object method definition(s)`
         );
         return targets.map(target => this.createProgramUnitLocationLink(target, originRange));
     }

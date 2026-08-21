@@ -7,6 +7,11 @@ export type ProgramUnitSide = 'specification' | 'body';
 export type ProgramUnitKind = 'package' | 'type';
 export type ProgramUnitModifier = 'constructor' | 'member' | 'static' | 'map' | 'order' | 'overriding';
 
+export interface ObjectTypeAttribute {
+    name: string;
+    typeName: string;
+}
+
 export interface ProgramUnitSymbol {
     uri: string;
     programUnitName: string;
@@ -16,7 +21,12 @@ export interface ProgramUnitSymbol {
     modifiers: ProgramUnitModifier[];
     signature: string;
     parameterCount: number;
+    requiredParameterCount: number;
+    parameterNames: string[];
     signatureComplete: boolean;
+    baseTypeName?: string;
+    collectionElementTypeName?: string;
+    objectAttributes?: ObjectTypeAttribute[];
     isImplementation?: boolean;
     side: ProgramUnitSide;
     line: number;
@@ -25,11 +35,30 @@ export interface ProgramUnitSymbol {
 
 export type ProgramUnitNavigationKind = 'definition' | 'declaration' | 'implementation';
 
+interface ObjectMethodCall {
+    name: string;
+    nameOffset: number;
+    receiverName: string;
+    receiverIndexed: boolean;
+    argumentCount: number;
+    namedArguments: string[];
+}
+
+interface EnclosingProgramUnit {
+    name: string;
+    kind: ProgramUnitKind;
+    side: ProgramUnitSide;
+    start: number;
+    end: number;
+}
+
+const PROGRAM_UNIT_PATTERN = String.raw`\b(PACKAGE|TYPE)\s+(BODY\s+)?(?:(?:[A-Za-z][\w$#]*)\s*\.\s*)?([A-Za-z][\w$#]*)\s+(?:FORCE\s+)?(?:(?:AUTHID\s+(?:CURRENT_USER|DEFINER))\s+)?(IS|AS|UNDER)\b`;
+
 /** Extract the program-unit symbols needed for spec/body navigation. */
 export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUnitSymbol[] {
     const source = maskCommentsAndStrings(document.text);
     const symbols: ProgramUnitSymbol[] = [];
-    const programUnitPattern = /\b(PACKAGE|TYPE)\s+(BODY\s+)?(?:(?:[A-Za-z][\w$#]*)\s*\.\s*)?([A-Za-z][\w$#]*)\s+(?:FORCE\s+)?(?:(?:AUTHID\s+(?:CURRENT_USER|DEFINER))\s+)?(IS|AS|UNDER)\b/gi;
+    const programUnitPattern = new RegExp(PROGRAM_UNIT_PATTERN, 'gi');
 
     for (const match of source.matchAll(programUnitPattern)) {
         const isTypeSpecification = match[1].toUpperCase() === 'TYPE' && !match[2];
@@ -42,6 +71,12 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
         const programUnitName = match[3];
         const nameOffset = match.index + match[0].toLowerCase().lastIndexOf(programUnitName.toLowerCase());
         const position = offsetToPosition(source, nameOffset);
+        const programUnitStart = match.index + match[0].length;
+        const programUnitEnd = findProgramUnitEnd(source, programUnitStart, programUnitName);
+        const programUnitText = source.slice(programUnitStart, programUnitEnd);
+        const typeDetails = match[1].toUpperCase() === 'TYPE' && !match[2]
+            ? extractTypeDetails(programUnitText, match[4])
+            : {};
 
         symbols.push({
             uri: document.uri,
@@ -52,7 +87,10 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
             modifiers: [],
             signature: '',
             parameterCount: 0,
+            requiredParameterCount: 0,
+            parameterNames: [],
             signatureComplete: true,
+            ...typeDetails,
             side: match[2] ? 'body' : 'specification',
             line: position.line,
             column: position.column
@@ -66,8 +104,6 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
             continue;
         }
 
-        const programUnitEnd = findProgramUnitEnd(source, match.index + match[0].length, programUnitName);
-        const programUnitText = source.slice(match.index + match[0].length, programUnitEnd);
         const memberPattern = /^[ \t]*((?:(?:CONSTRUCTOR|MEMBER|STATIC|MAP|ORDER|OVERRIDING)\s+)*)(PROCEDURE|FUNCTION)\s+([A-Za-z][\w$#]*)\b/gim;
         let skipMembersBefore = 0;
 
@@ -99,6 +135,8 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
                 modifiers,
                 signature: parameters.signature,
                 parameterCount: parameters.count,
+                requiredParameterCount: parameters.requiredCount,
+                parameterNames: parameters.names,
                 signatureComplete: parameters.complete,
                 isImplementation: match[2] ? header?.bodyStart !== undefined : false,
                 side: match[2] ? 'body' : 'specification',
@@ -118,6 +156,61 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
     }
 
     return symbols;
+}
+
+function extractTypeDetails(
+    programUnitText: string,
+    introducer: string
+): Partial<Pick<ProgramUnitSymbol, 'baseTypeName' | 'collectionElementTypeName' | 'objectAttributes'>> {
+    if (introducer.toUpperCase() === 'UNDER') {
+        return {
+            baseTypeName: firstQualifiedIdentifier(programUnitText),
+            objectAttributes: extractObjectTypeAttributes(programUnitText)
+        };
+    }
+
+    const collection = /^\s*(?:TABLE\s+OF|VARRAY\s*\([^)]*\)\s+OF)\s+((?:[A-Za-z][\w$#]*\s*\.\s*)?[A-Za-z][\w$#]*)/i
+        .exec(programUnitText);
+    if (collection) {
+        return { collectionElementTypeName: unqualifiedName(collection[1]) };
+    }
+
+    return { objectAttributes: extractObjectTypeAttributes(programUnitText) };
+}
+
+function extractObjectTypeAttributes(programUnitText: string): ObjectTypeAttribute[] {
+    const object = /\bOBJECT\s*\(/i.exec(programUnitText);
+    if (!object) {
+        return [];
+    }
+    const opening = object.index + object[0].lastIndexOf('(');
+    const closing = findMatchingParenthesis(programUnitText, opening);
+    if (closing === undefined) {
+        return [];
+    }
+
+    const methodPrefixes = new Set([
+        'CONSTRUCTOR', 'MEMBER', 'STATIC', 'MAP', 'ORDER', 'OVERRIDING', 'FINAL', 'NOT'
+    ]);
+    return splitParameters(programUnitText.slice(opening + 1, closing))
+        .map(entry => entry.trim())
+        .filter(entry => entry.length > 0)
+        .flatMap(entry => {
+            const attribute = /^([A-Za-z][\w$#]*)\s+((?:[A-Za-z][\w$#]*\s*\.\s*)?[A-Za-z][\w$#]*)\b/i.exec(entry);
+            if (!attribute || methodPrefixes.has(attribute[1].toUpperCase())) {
+                return [];
+            }
+            return [{ name: attribute[1], typeName: unqualifiedName(attribute[2]) }];
+        });
+}
+
+function firstQualifiedIdentifier(text: string): string | undefined {
+    const match = /^\s*((?:[A-Za-z][\w$#]*\s*\.\s*)?[A-Za-z][\w$#]*)/i.exec(text);
+    return match ? unqualifiedName(match[1]) : undefined;
+}
+
+function unqualifiedName(name: string): string {
+    return name.replace(/\s/g, '').split('.').at(-1) ?? name;
 }
 
 /** Find a schema type name when the cursor is in a PL/SQL type position. */
@@ -223,6 +316,251 @@ export function findSchemaTypeDefinitions(
     );
 }
 
+/** Resolve a call on an Oracle object instance to repository member declarations and implementations. */
+export function resolveObjectMethodCall(
+    document: SemanticDocument,
+    line: number,
+    column: number,
+    currentSymbols: readonly ProgramUnitSymbol[],
+    lookupSymbols: (name: string) => readonly ProgramUnitSymbol[]
+): ProgramUnitSymbol[] {
+    const source = maskCommentsAndStrings(document.text);
+    const call = findObjectMethodCallAt(source, line, column);
+    if (!call) {
+        return [];
+    }
+    const programUnit = findEnclosingProgramUnit(source, call.nameOffset);
+    if (!programUnit) {
+        return [];
+    }
+
+    const lookup = (name: string) => uniqueSymbols([
+        ...currentSymbols.filter(symbol =>
+            symbol.name.toLowerCase() === name.toLowerCase()
+        ),
+        ...lookupSymbols(name)
+    ]);
+    let receiverType = call.receiverName.toLowerCase() === 'self'
+        ? programUnit.kind === 'type' ? programUnit.name : undefined
+        : findDeclaredReceiverType(source, call, programUnit, currentSymbols, lookup);
+    if (!receiverType) {
+        return [];
+    }
+
+    if (call.receiverIndexed) {
+        receiverType = findCollectionElementType(receiverType, lookup);
+        if (!receiverType) {
+            return [];
+        }
+    }
+
+    const visited = new Set<string>();
+    let declaringType: string | undefined = receiverType;
+    while (declaringType && !visited.has(declaringType.toLowerCase())) {
+        visited.add(declaringType.toLowerCase());
+        const targets = lookup(call.name).filter(symbol =>
+            symbol.programUnitKind === 'type' &&
+            (symbol.kind === 'function' || symbol.kind === 'procedure') &&
+            symbol.programUnitName.toLowerCase() === declaringType?.toLowerCase() &&
+            !symbol.modifiers.includes('constructor') &&
+            !symbol.modifiers.includes('static') &&
+            isCompatibleCall(call, symbol)
+        );
+        if (targets.length > 0) {
+            return uniqueSymbols(targets);
+        }
+        declaringType = findBaseType(declaringType, lookup);
+    }
+    return [];
+}
+
+function findObjectMethodCallAt(
+    source: string,
+    line: number,
+    column: number
+): ObjectMethodCall | undefined {
+    const lineStart = positionToOffset(source, line);
+    if (lineStart === undefined) {
+        return undefined;
+    }
+    const lineEnd = source.indexOf('\n', lineStart);
+    const currentLine = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd);
+    const identifier = [...currentLine.matchAll(/[A-Za-z][\w$#]*/g)].find(match =>
+        column >= match.index && column < match.index + match[0].length
+    );
+    if (!identifier) {
+        return undefined;
+    }
+
+    const nameOffset = lineStart + identifier.index;
+    let opening = nameOffset + identifier[0].length;
+    while (/\s/.test(source[opening] || '')) {
+        opening++;
+    }
+    if (source[opening] !== '(') {
+        return undefined;
+    }
+    const closing = findMatchingParenthesis(source, opening);
+    if (closing === undefined) {
+        return undefined;
+    }
+
+    let dot = nameOffset - 1;
+    while (/\s/.test(source[dot] || '')) {
+        dot--;
+    }
+    if (source[dot] !== '.') {
+        return undefined;
+    }
+    let receiverEnd = dot - 1;
+    while (/\s/.test(source[receiverEnd] || '')) {
+        receiverEnd--;
+    }
+
+    let receiverIndexed = false;
+    if (source[receiverEnd] === ')') {
+        const receiverOpening = findMatchingParenthesisBackward(source, receiverEnd);
+        if (receiverOpening === undefined) {
+            return undefined;
+        }
+        receiverEnd = receiverOpening - 1;
+        receiverIndexed = true;
+        while (/\s/.test(source[receiverEnd] || '')) {
+            receiverEnd--;
+        }
+    }
+    const receiver = /[A-Za-z][\w$#]*$/.exec(source.slice(0, receiverEnd + 1));
+    if (!receiver) {
+        return undefined;
+    }
+
+    const argumentsList = splitParameters(source.slice(opening + 1, closing));
+    return {
+        name: identifier[0],
+        nameOffset,
+        receiverName: receiver[0],
+        receiverIndexed,
+        argumentCount: argumentsList.length,
+        namedArguments: argumentsList.flatMap(argument => {
+            const named = /^\s*([A-Za-z][\w$#]*)\s*=>/i.exec(argument);
+            return named ? [named[1]] : [];
+        })
+    };
+}
+
+function findDeclaredReceiverType(
+    source: string,
+    call: ObjectMethodCall,
+    programUnit: EnclosingProgramUnit,
+    currentSymbols: readonly ProgramUnitSymbol[],
+    lookup: (name: string) => readonly ProgramUnitSymbol[]
+): string | undefined {
+    const scopeStart = currentSymbols
+        .filter(symbol =>
+            symbol.programUnitName.toLowerCase() === programUnit.name.toLowerCase() &&
+            symbol.side === programUnit.side &&
+            (symbol.kind === 'function' || symbol.kind === 'procedure')
+        )
+        .map(symbol => positionToOffset(source, symbol.line, symbol.column))
+        .filter((offset): offset is number => offset !== undefined && offset <= call.nameOffset)
+        .sort((left, right) => right - left)[0] ?? programUnit.start;
+    const escapedReceiver = call.receiverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const declarationPattern = new RegExp(
+        String.raw`\b${escapedReceiver}\b\s+` +
+        String.raw`(?:CONSTANT\s+)?(?:(?:IN\s+OUT|IN|OUT)\s+)?(?:NOCOPY\s+)?` +
+        String.raw`((?:[A-Za-z][\w$#]*\s*\.\s*)?[A-Za-z][\w$#]*)\b`,
+        'gi'
+    );
+    const declarations = [...source.slice(scopeStart, call.nameOffset).matchAll(declarationPattern)];
+    const localType = declarations.at(-1)?.[1];
+    if (localType) {
+        return unqualifiedName(localType);
+    }
+
+    const attributeTypes = lookup(programUnit.name)
+        .filter(symbol =>
+            symbol.programUnitKind === 'type' &&
+            symbol.kind === 'type' &&
+            symbol.side === 'specification'
+        )
+        .flatMap(symbol => symbol.objectAttributes ?? [])
+        .filter(attribute => attribute.name.toLowerCase() === call.receiverName.toLowerCase())
+        .map(attribute => attribute.typeName.toLowerCase());
+    const uniqueTypes = [...new Set(attributeTypes)];
+    return uniqueTypes.length === 1 ? uniqueTypes[0] : undefined;
+}
+
+function findCollectionElementType(
+    collectionType: string,
+    lookup: (name: string) => readonly ProgramUnitSymbol[]
+): string | undefined {
+    const elementTypes = lookup(collectionType)
+        .filter(symbol =>
+            symbol.programUnitKind === 'type' &&
+            symbol.kind === 'type' &&
+            symbol.side === 'specification' &&
+            symbol.collectionElementTypeName
+        )
+        .map(symbol => symbol.collectionElementTypeName?.toLowerCase())
+        .filter((name): name is string => name !== undefined);
+    const uniqueTypes = [...new Set(elementTypes)];
+    return uniqueTypes.length === 1 ? uniqueTypes[0] : undefined;
+}
+
+function findBaseType(
+    objectType: string,
+    lookup: (name: string) => readonly ProgramUnitSymbol[]
+): string | undefined {
+    const baseTypes = lookup(objectType)
+        .filter(symbol =>
+            symbol.programUnitKind === 'type' &&
+            symbol.kind === 'type' &&
+            symbol.side === 'specification' &&
+            symbol.baseTypeName
+        )
+        .map(symbol => symbol.baseTypeName?.toLowerCase())
+        .filter((name): name is string => name !== undefined);
+    const uniqueTypes = [...new Set(baseTypes)];
+    return uniqueTypes.length === 1 ? uniqueTypes[0] : undefined;
+}
+
+function isCompatibleCall(call: ObjectMethodCall, symbol: ProgramUnitSymbol): boolean {
+    if (!symbol.signatureComplete) {
+        return true;
+    }
+    if (call.argumentCount < symbol.requiredParameterCount ||
+        call.argumentCount > symbol.parameterCount) {
+        return false;
+    }
+    const parameterNames = new Set(symbol.parameterNames.map(name => name.toLowerCase()));
+    return call.namedArguments.every(name => parameterNames.has(name.toLowerCase()));
+}
+
+function findEnclosingProgramUnit(source: string, offset: number): EnclosingProgramUnit | undefined {
+    const pattern = new RegExp(PROGRAM_UNIT_PATTERN, 'gi');
+    for (const match of source.matchAll(pattern)) {
+        const start = match.index + match[0].length;
+        const end = findProgramUnitEnd(source, start, match[3]);
+        if (offset >= match.index && offset <= end) {
+            return {
+                name: match[3],
+                kind: match[1].toLowerCase() as ProgramUnitKind,
+                side: match[2] ? 'body' : 'specification',
+                start,
+                end
+            };
+        }
+    }
+    return undefined;
+}
+
+function uniqueSymbols(symbols: readonly ProgramUnitSymbol[]): ProgramUnitSymbol[] {
+    return [...new Map(symbols.map(symbol => [
+        `${symbol.uri}:${symbol.line}:${symbol.column}`,
+        symbol
+    ])).values()];
+}
+
 function hasCreatePrefix(text: string, typeOffset: number): boolean {
     return /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:EDITIONABLE\s+|NONEDITIONABLE\s+)?$/i
         .test(text.slice(0, typeOffset));
@@ -264,13 +602,13 @@ function findMemberHeader(
 function extractParameterSignature(
     text: string,
     start: number
-): { signature: string; count: number; complete: boolean } {
+): { signature: string; count: number; requiredCount: number; names: string[]; complete: boolean } {
     let opening = start;
     while (/\s/.test(text[opening] || '')) {
         opening++;
     }
     if (text[opening] !== '(') {
-        return { signature: '', count: 0, complete: true };
+        return { signature: '', count: 0, requiredCount: 0, names: [], complete: true };
     }
 
     let depth = 1;
@@ -284,13 +622,15 @@ function extractParameterSignature(
         closing++;
     }
     if (depth !== 0) {
-        return { signature: '', count: 0, complete: false };
+        return { signature: '', count: 0, requiredCount: 0, names: [], complete: false };
     }
 
     const parameters = splitParameters(text.slice(opening + 1, closing - 1));
     return {
         signature: parameters.map(normalizeParameter).join(','),
         count: parameters.length,
+        requiredCount: parameters.filter(parameter => !/(?:\bDEFAULT\b|:=)/i.test(parameter)).length,
+        names: parameters.map(parameter => /^\s*([A-Za-z][\w$#]*)/.exec(parameter)?.[1] ?? ''),
         complete: true
     };
 }
@@ -315,6 +655,36 @@ function splitParameters(text: string): string[] {
         parameters.push(last);
     }
     return parameters;
+}
+
+function findMatchingParenthesis(text: string, opening: number): number | undefined {
+    let depth = 0;
+    for (let index = opening; index < text.length; index++) {
+        if (text[index] === '(') {
+            depth++;
+        } else if (text[index] === ')') {
+            depth--;
+            if (depth === 0) {
+                return index;
+            }
+        }
+    }
+    return undefined;
+}
+
+function findMatchingParenthesisBackward(text: string, closing: number): number | undefined {
+    let depth = 0;
+    for (let index = closing; index >= 0; index--) {
+        if (text[index] === ')') {
+            depth++;
+        } else if (text[index] === '(') {
+            depth--;
+            if (depth === 0) {
+                return index;
+            }
+        }
+    }
+    return undefined;
 }
 
 function normalizeParameter(parameter: string): string {
@@ -576,7 +946,7 @@ function offsetToPosition(text: string, offset: number): { line: number; column:
     return { line, column: offset - lastNewline - 1 };
 }
 
-function positionToOffset(text: string, line: number): number | undefined {
+function positionToOffset(text: string, line: number, column = 0): number | undefined {
     if (line < 0) {
         return undefined;
     }
@@ -588,7 +958,7 @@ function positionToOffset(text: string, line: number): number | undefined {
         }
         offset = newline + 1;
     }
-    return offset;
+    return offset + column;
 }
 
 function maskCommentsAndStrings(text: string): string {
