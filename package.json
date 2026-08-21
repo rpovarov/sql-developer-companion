@@ -2,7 +2,7 @@
   "name": "sql-developer-companion",
   "displayName": "SQL Developer Companion",
   "description": "Companion utilities for Oracle SQL Developer in VS Code",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "publisher": "shmuel-appleton",
   "repository": {
     "type": "git",

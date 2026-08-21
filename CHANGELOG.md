@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 — 2026-08-21
+
+- Personal fork release based on upstream `1.1.2`.
+- Added semantic navigation between package and object type specifications and bodies through Definition, Declaration, and Implementation commands.
+- Added direct member and constructor pairing by normalized overload signatures, including private forward declarations and safe ambiguous Peek results.
+- Added live workspace indexing so unsaved repository documents immediately replace saved symbol locations and signatures.
+- Added automated coverage for semantic matching, incremental indexing, malformed input, cancellation, and workspace boundaries.
+
 ## 1.1.2 — 2026-06-02
 
 - Added `recentObjectsOpenAsPreview` setting to control whether recent objects open in preview mode or as pinned editors (default: pinned).
