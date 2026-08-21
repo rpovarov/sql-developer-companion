@@ -330,6 +330,33 @@ test('direct package member declaration finds its implementation', () => {
     }]);
 });
 
+test('ambiguous same-arity implementations are all returned for Peek', () => {
+    const specification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pks',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE submit_order(p_order_id RAW);',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const body = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE submit_order(p_order_id NUMBER) IS BEGIN NULL; END;',
+            '    PROCEDURE submit_order(p_order_code VARCHAR2) IS BEGIN NULL; END;',
+            '    PROCEDURE submit_order(p_order_id NUMBER, p_note VARCHAR2) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = specification.find(symbol => symbol.kind === 'procedure');
+
+    assert.ok(declaration);
+    assert.deepEqual(findCounterparts(declaration, body).map(symbol => symbol.line), [1, 2, 3]);
+});
+
 test('symbol at cursor is found only while the cursor is on its name', () => {
     const symbols = extractProgramUnitSymbols({
         uri: 'file:///workspace/order_api.pks',
@@ -376,6 +403,125 @@ test('navigation directions pair package sides in the same document', () => {
     assert.deepEqual(findNavigationTargets(declaration, symbols, 'declaration'), []);
     assert.equal(findNavigationTargets(declaration, symbols, 'implementation')[0], implementation);
     assert.deepEqual(findNavigationTargets(implementation, symbols, 'implementation'), []);
+});
+
+test('private forward declaration navigates only to its local implementation', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pkb',
+        text: [
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE normalize_order(p_order_id NUMBER);',
+            '    PROCEDURE normalize_order(p_order_id NUMBER) IS',
+            '    BEGIN',
+            '        NULL;',
+            '    END normalize_order;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = symbols.find(symbol => symbol.line === 1);
+    const implementation = symbols.find(symbol => symbol.line === 2);
+
+    assert.ok(declaration);
+    assert.ok(implementation);
+    assert.equal(findNavigationTargets(declaration, symbols, 'implementation')[0], implementation);
+    assert.equal(findNavigationTargets(implementation, symbols, 'declaration')[0], declaration);
+    assert.equal(findNavigationTargets(declaration, symbols, 'definition')[0], implementation);
+    assert.equal(findNavigationTargets(implementation, symbols, 'definition')[0], declaration);
+    assert.deepEqual(findNavigationTargets(declaration, symbols, 'declaration'), []);
+});
+
+test('private overload is not presented as a public specification counterpart', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.sql',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE normalize_order(p_order_id NUMBER);',
+            'END order_api;',
+            '/',
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE normalize_order(p_order_code VARCHAR2) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const privateImplementation = symbols.find(symbol => symbol.line === 5);
+
+    assert.ok(privateImplementation);
+    assert.deepEqual(findNavigationTargets(privateImplementation, symbols, 'declaration'), []);
+    assert.deepEqual(findNavigationTargets(privateImplementation, symbols, 'definition'), []);
+});
+
+test('public declaration does not fall back to a private forward-declared overload', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.sql',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE normalize_order(p_order_id NUMBER);',
+            'END order_api;',
+            '/',
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE normalize_order(p_order_code VARCHAR2);',
+            '    PROCEDURE normalize_order(p_order_code VARCHAR2) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const publicDeclaration = symbols.find(symbol => symbol.line === 1);
+    const privateDeclaration = symbols.find(symbol => symbol.line === 5);
+    const privateImplementation = symbols.find(symbol => symbol.line === 6);
+
+    assert.ok(publicDeclaration);
+    assert.ok(privateDeclaration);
+    assert.ok(privateImplementation);
+    assert.deepEqual(findNavigationTargets(publicDeclaration, symbols, 'implementation'), []);
+    assert.equal(
+        findNavigationTargets(privateImplementation, symbols, 'declaration')[0],
+        privateDeclaration
+    );
+});
+
+test('public specification is preferred over a same-body forward declaration', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.sql',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE normalize_order(p_order_id NUMBER);',
+            'END order_api;',
+            '/',
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE normalize_order(p_order_id NUMBER);',
+            '    PROCEDURE normalize_order(p_order_id NUMBER) IS BEGIN NULL; END;',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const publicDeclaration = symbols.find(symbol => symbol.line === 1);
+    const implementation = symbols.find(symbol => symbol.line === 6);
+
+    assert.ok(publicDeclaration);
+    assert.ok(implementation);
+    assert.equal(
+        findNavigationTargets(implementation, symbols, 'declaration')[0],
+        publicDeclaration
+    );
+});
+
+test('member without a counterpart returns no navigation target', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.pks',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE cancel_order(p_order_id NUMBER);',
+            'END order_api;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = symbols.find(symbol => symbol.kind === 'procedure');
+
+    assert.ok(declaration);
+    assert.deepEqual(findNavigationTargets(declaration, symbols, 'definition'), []);
+    assert.deepEqual(findNavigationTargets(declaration, symbols, 'implementation'), []);
 });
 
 test('unnamed package terminator keeps same-file specification and body separate', () => {
@@ -437,6 +583,32 @@ test('nested subprogram is not exported as a direct package member', () => {
         { name: 'submit_order', side: 'body' }
     ]);
     assert.equal(findCounterparts(declaration, symbols).length, 1);
+});
+
+test('nested subprogram cannot satisfy a direct member declaration', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/order_api.sql',
+        text: [
+            'CREATE PACKAGE order_api AS',
+            '    PROCEDURE write_audit;',
+            'END;',
+            '/',
+            'CREATE PACKAGE BODY order_api AS',
+            '    PROCEDURE submit_order IS',
+            '        PROCEDURE write_audit IS BEGIN NULL; END;',
+            '    BEGIN',
+            '        write_audit;',
+            '    END;',
+            'END;',
+            '/'
+        ].join('\n')
+    });
+    const declaration = symbols.find(symbol =>
+        symbol.name === 'write_audit' && symbol.side === 'specification'
+    );
+
+    assert.ok(declaration);
+    assert.deepEqual(findNavigationTargets(declaration, symbols, 'implementation'), []);
 });
 
 test('unnamed member endings still exclude nested subprograms and keep following direct members', () => {

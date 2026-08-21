@@ -16,6 +16,7 @@ export interface ProgramUnitSymbol {
     modifiers: ProgramUnitModifier[];
     signature: string;
     parameterCount: number;
+    isImplementation?: boolean;
     side: ProgramUnitSide;
     line: number;
     column: number;
@@ -73,6 +74,9 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
             const memberOffset = match.index + match[0].length + memberMatch.index +
                 memberMatch[0].toLowerCase().lastIndexOf(memberName.toLowerCase());
             const memberPosition = offsetToPosition(source, memberOffset);
+            const header = match[2]
+                ? findMemberHeader(programUnitText, memberMatch.index + memberMatch[0].length)
+                : undefined;
 
             symbols.push({
                 uri: document.uri,
@@ -83,13 +87,13 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
                 modifiers,
                 signature: parameters.signature,
                 parameterCount: parameters.count,
+                isImplementation: match[2] ? header?.bodyStart !== undefined : false,
                 side: match[2] ? 'body' : 'specification',
                 line: memberPosition.line,
                 column: memberPosition.column
             });
 
             if (match[2]) {
-                const header = findMemberHeader(programUnitText, memberMatch.index + memberMatch[0].length);
                 const memberEnd = header?.bodyStart === undefined
                     ? undefined
                     : findMemberEnd(programUnitText, header.bodyStart, memberName);
@@ -299,21 +303,84 @@ export function findCounterparts(
     origin: ProgramUnitSymbol,
     candidates: readonly ProgramUnitSymbol[]
 ): ProgramUnitSymbol[] {
-    const oppositeSide: ProgramUnitSide = origin.side === 'specification' ? 'body' : 'specification';
-    const matchingSymbols = candidates.filter(candidate =>
-        candidate.side === oppositeSide &&
+    const isMember = origin.kind === 'procedure' || origin.kind === 'function';
+    const sameMember = candidates.filter(candidate =>
+        candidate !== origin &&
         candidate.kind === origin.kind &&
         candidate.programUnitKind === origin.programUnitKind &&
         candidate.programUnitName.toLowerCase() === origin.programUnitName.toLowerCase() &&
         candidate.name.toLowerCase() === origin.name.toLowerCase() &&
         candidate.modifiers.join(' ') === origin.modifiers.join(' ')
     );
+
+    if (isMember && origin.side === 'body' && origin.isImplementation === false) {
+        const localImplementations = sameMember.filter(candidate =>
+            candidate.uri === origin.uri &&
+            candidate.side === 'body' &&
+            candidate.isImplementation === true
+        );
+        const exact = localImplementations.filter(candidate => candidate.signature === origin.signature);
+        if (exact.length > 0 || origin.signature === '') {
+            return exact;
+        }
+        const sameArity = localImplementations.filter(
+            candidate => candidate.parameterCount === origin.parameterCount
+        );
+        if (sameArity.length === 1) {
+            return sameArity;
+        }
+        return localImplementations.length > 1 ? localImplementations : [];
+    }
+
+    const oppositeSide: ProgramUnitSide = origin.side === 'specification' ? 'body' : 'specification';
+    const matchingSymbols = sameMember.filter(candidate =>
+        candidate.side === oppositeSide &&
+        (!isMember || candidate.isImplementation !== origin.isImplementation)
+    );
     const exact = matchingSymbols.filter(candidate => candidate.signature === origin.signature);
-    if (exact.length > 0 || origin.signature === '') {
+    if (exact.length > 0) {
         return exact;
     }
-    const sameArity = matchingSymbols.filter(candidate => candidate.parameterCount === origin.parameterCount);
-    return sameArity.length === 1 ? sameArity : [];
+
+    if (isMember && origin.side === 'body' && origin.isImplementation === true) {
+        const localDeclarations = sameMember.filter(candidate =>
+            candidate.uri === origin.uri &&
+            candidate.side === 'body' &&
+            candidate.isImplementation === false
+        );
+        const exactLocal = localDeclarations.filter(candidate => candidate.signature === origin.signature);
+        if (exactLocal.length > 0) {
+            return exactLocal;
+        }
+        if (origin.signature === '') {
+            return [];
+        }
+        const sameArity = localDeclarations.filter(
+            candidate => candidate.parameterCount === origin.parameterCount
+        );
+        if (sameArity.length === 1) {
+            return sameArity;
+        }
+        return localDeclarations.length > 1 ? localDeclarations : [];
+    }
+
+    if (origin.signature === '') {
+        return [];
+    }
+    const fallbackSymbols = matchingSymbols.filter(candidate =>
+        origin.side !== 'specification' ||
+        !sameMember.some(local =>
+            local.uri === candidate.uri &&
+            local.side === 'body' &&
+            local.isImplementation === false &&
+            local.signature === candidate.signature
+        )
+    );
+    const sameArity = fallbackSymbols.filter(candidate => candidate.parameterCount === origin.parameterCount);
+    if (sameArity.length === 1) {
+        return sameArity;
+    }
+    return fallbackSymbols.length > 1 ? fallbackSymbols : [];
 }
 
 /** Apply VS Code's definition/declaration/implementation direction to a program-unit symbol. */
@@ -322,11 +389,14 @@ export function findNavigationTargets(
     candidates: readonly ProgramUnitSymbol[],
     navigation: ProgramUnitNavigationKind
 ): ProgramUnitSymbol[] {
-    if (navigation === 'declaration' && origin.side !== 'body') {
+    if (navigation === 'declaration' &&
+        (origin.side !== 'body' || origin.isImplementation === false)) {
         return [];
     }
     if (navigation === 'implementation' && origin.side !== 'specification') {
-        return [];
+        if (origin.isImplementation !== false) {
+            return [];
+        }
     }
     return findCounterparts(origin, candidates);
 }
