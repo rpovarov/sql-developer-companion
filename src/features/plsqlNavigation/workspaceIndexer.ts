@@ -30,7 +30,7 @@ export class WorkspaceIndexer {
     private programUnitFileIndex: Map<string, ProgramUnitSymbol[]> = new Map();
     
     // File patterns to index
-    private readonly FILE_PATTERNS = '**/*.{pks,pkb,sql,pls,plb,pck}';
+    private readonly FILE_PATTERNS = '**/*.{pks,pkb,sql,pls,plb,pck,tps,tpb}';
     
     private isIndexing = false;
     private disposed = false;
@@ -407,6 +407,8 @@ export class WorkspaceIndexer {
                ext.endsWith('.sql') || 
                ext.endsWith('.pls') || 
                ext.endsWith('.plb') ||
-               ext.endsWith('.pck');
+               ext.endsWith('.pck') ||
+               ext.endsWith('.tps') ||
+               ext.endsWith('.tpb');
     }
 }

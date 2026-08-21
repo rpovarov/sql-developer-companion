@@ -4,6 +4,8 @@ import {
     extractProgramUnitSymbols,
     findCounterparts,
     findNavigationTargets,
+    findSchemaTypeDefinitions,
+    findSchemaTypeReferenceAt,
     findSymbolAt
 } from './semanticNavigation';
 
@@ -71,6 +73,107 @@ test('object type headers navigate between separate repository documents', () =>
 
     assert.equal(findNavigationTargets(specification[0], body, 'implementation')[0], body[0]);
     assert.equal(findNavigationTargets(body[0], specification, 'declaration')[0], specification[0]);
+});
+
+test('schema collection specifications enter the program-unit index', () => {
+    const symbols = extractProgramUnitSymbols({
+        uri: 'file:///workspace/customer_types.tps',
+        text: [
+            'CREATE TYPE customer_ids AS TABLE OF NUMBER;',
+            '/',
+            'CREATE TYPE customer_codes AS VARRAY(20) OF VARCHAR2(30);',
+            '/'
+        ].join('\n')
+    });
+
+    assert.deepEqual(symbols.map(symbol => ({
+        name: symbol.name,
+        kind: symbol.kind,
+        side: symbol.side
+    })), [
+        { name: 'customer_ids', kind: 'type', side: 'specification' },
+        { name: 'customer_codes', kind: 'type', side: 'specification' }
+    ]);
+});
+
+test('schema type references are recognized in supported type positions', () => {
+    const lines = [
+        'PROCEDURE load_customer(p_value IN OUT NOCOPY app.customer_type);',
+        'v_customer customer_type;',
+        'FUNCTION current_customer RETURN customer_type;',
+        'CREATE TYPE holder AS OBJECT (value customer_type);',
+        'TYPE local_list IS TABLE OF customer_type;',
+        'TYPE local_array IS VARRAY(5) OF customer_type;',
+        'CREATE TYPE child_customer UNDER customer_type (extra NUMBER);'
+    ];
+    const document = { uri: 'file:///workspace/references.sql', text: lines.join('\n') };
+
+    assert.deepEqual(lines.map((line, index) => findSchemaTypeReferenceAt(
+        document,
+        index,
+        line.lastIndexOf('customer_type') + 2
+    )), [
+        'customer_type',
+        'customer_type',
+        'customer_type',
+        'customer_type',
+        'customer_type',
+        'customer_type',
+        'customer_type'
+    ]);
+});
+
+test('TREAT target is recognized as a schema type reference', () => {
+    const lines = [
+        'l_product := treat(self.get_product(p_key) as t_o2_product_tariff);',
+        'l_product := treat(self.get_product(p_key) as product_schema.t_o2_product_tariff);'
+    ];
+    const document = { uri: 'file:///workspace/T_PRODUCT_MAPPING.sql', text: lines.join('\n') };
+
+    assert.deepEqual(lines.map((line, index) => findSchemaTypeReferenceAt(
+        document,
+        index,
+        line.indexOf('t_o2_product_tariff') + 2
+    )), ['t_o2_product_tariff', 't_o2_product_tariff']);
+});
+
+test('comments, strings, expressions, and executable returns are not type references', () => {
+    const lines = [
+        '-- p_value customer_type;',
+        "v_text := 'customer_type';",
+        'v_customer := customer_type();',
+        'customer_type.process;',
+        'SELECT value AS customer_type FROM source_table;',
+        'v_customer := wrapper(value AS customer_type);',
+        'FUNCTION current_customer RETURN NUMBER IS BEGIN RETURN customer_type; END;'
+    ];
+    const document = { uri: 'file:///workspace/non_references.sql', text: lines.join('\n') };
+
+    assert.deepEqual(lines.map((line, index) => findSchemaTypeReferenceAt(
+        document,
+        index,
+        line.lastIndexOf('customer_type') + 2
+    )), [undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+});
+
+test('repository type lookup returns every local specification and body header', () => {
+    const specification = extractProgramUnitSymbols({
+        uri: 'file:///workspace/customer_type.tps',
+        text: 'CREATE TYPE customer_type AS OBJECT (id NUMBER);\n/'
+    });
+    const body = extractProgramUnitSymbols({
+        uri: 'file:///workspace/customer_type.tpb',
+        text: 'CREATE TYPE BODY customer_type AS\nEND customer_type;\n/'
+    });
+
+    assert.deepEqual(
+        findSchemaTypeDefinitions('CUSTOMER_TYPE', [...specification, ...body])
+            .map(symbol => ({ uri: symbol.uri, side: symbol.side })),
+        [
+            { uri: 'file:///workspace/customer_type.tps', side: 'specification' },
+            { uri: 'file:///workspace/customer_type.tpb', side: 'body' }
+        ]
+    );
 });
 
 test('object subtype specification exposes its header and overriding member', () => {

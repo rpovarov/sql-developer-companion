@@ -37,10 +37,19 @@
   "activationEvents": [
     "onStartupFinished",
     "onLanguage:oracle-sql",
-    "workspaceContains:**/*.{pks,pkb,sql,pls,plb,pck}"
+    "workspaceContains:**/*.{pks,pkb,sql,pls,plb,pck,tps,tpb}"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "oracle-sql",
+        "extensions": [
+          ".tps",
+          ".tpb"
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "sqlDevCompanion.reopenRecent",

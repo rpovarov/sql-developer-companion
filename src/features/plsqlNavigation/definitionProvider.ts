@@ -4,6 +4,8 @@ import { WorkspaceIndexer, WorkspaceDefinition } from './workspaceIndexer';
 import {
     extractProgramUnitSymbols,
     findNavigationTargets,
+    findSchemaTypeDefinitions,
+    findSchemaTypeReferenceAt,
     findSymbolAt,
     ProgramUnitNavigationKind,
     ProgramUnitSymbol
@@ -40,6 +42,10 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
         const programUnitTargets = this.findProgramUnitLocations(document, position, 'definition');
         if (programUnitTargets) {
             return programUnitTargets;
+        }
+        const schemaTypeTargets = this.findSchemaTypeLocations(document, position);
+        if (schemaTypeTargets) {
+            return schemaTypeTargets;
         }
         return this.findLocation(document, position, 'Definition');
     }
@@ -86,6 +92,44 @@ export class PlsqlDefinitionProvider implements vscode.DefinitionProvider, vscod
             `[${navigation}] Found ${targets.length} program-unit counterpart(s) for "${origin.name}"`
         );
         return targets.map(target => this.createProgramUnitLocationLink(target, originRange));
+    }
+
+    private findSchemaTypeLocations(
+        document: vscode.TextDocument,
+        position: vscode.Position
+    ): vscode.LocationLink[] | undefined {
+        const typeName = findSchemaTypeReferenceAt(
+            { uri: document.uri.toString(), text: document.getText() },
+            position.line,
+            position.character
+        );
+        const canSearchWorkspace = document.uri.scheme === 'file' &&
+            vscode.workspace.getWorkspaceFolder(document.uri) !== undefined;
+        if (!typeName || !this.workspaceIndexer || !canSearchWorkspace) {
+            return undefined;
+        }
+
+        const currentSymbols = extractProgramUnitSymbols({
+            uri: document.uri.toString(),
+            text: document.getText()
+        });
+        const indexedSymbols = this.workspaceIndexer.findProgramUnitSymbols(typeName);
+        const definitions = findSchemaTypeDefinitions(typeName, [...currentSymbols, ...indexedSymbols]);
+        const uniqueDefinitions = [...new Map(definitions.map(definition => [
+            `${definition.uri}:${definition.line}:${definition.column}`,
+            definition
+        ])).values()];
+        if (uniqueDefinitions.length === 0) {
+            return undefined;
+        }
+
+        const originRange = document.getWordRangeAtPosition(position, /\w+/);
+        this.outputChannel.appendLine(
+            `[Definition] Found ${uniqueDefinitions.length} repository schema type definition(s) for "${typeName}"`
+        );
+        return uniqueDefinitions.map(definition =>
+            this.createProgramUnitLocationLink(definition, originRange)
+        );
     }
     
     private findLocation(

@@ -410,3 +410,25 @@ test('a saved-file read failure is isolated and reported to the output channel',
     assert.match(output.at(-1) ?? '', /Failed to index .*saved_error\.pks: saved read failed$/);
     readFileOverride = undefined;
 });
+
+test('type specification and body file extensions participate in indexing', async () => {
+    const specificationUri = fileUri('customer_type.tps');
+    const bodyUri = fileUri('customer_type.tpb');
+    savedFiles.set(
+        specificationUri.toString(),
+        'CREATE TYPE customer_type AS OBJECT (id NUMBER);\n/'
+    );
+    savedFiles.set(
+        bodyUri.toString(),
+        'CREATE TYPE BODY customer_type AS\nEND customer_type;\n/'
+    );
+    const indexer = new WorkspaceIndexer({ appendLine() { } } as never);
+
+    await indexer.indexFile(specificationUri as never);
+    await indexer.indexFile(bodyUri as never);
+
+    assert.deepEqual(
+        indexer.findProgramUnitSymbols('customer_type').map(symbol => symbol.side),
+        ['specification', 'body']
+    );
+});

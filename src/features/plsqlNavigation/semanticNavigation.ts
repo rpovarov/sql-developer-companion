@@ -32,9 +32,11 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
     const programUnitPattern = /\b(PACKAGE|TYPE)\s+(BODY\s+)?(?:(?:[A-Za-z][\w$#]*)\s*\.\s*)?([A-Za-z][\w$#]*)\s+(?:FORCE\s+)?(?:(?:AUTHID\s+(?:CURRENT_USER|DEFINER))\s+)?(IS|AS|UNDER)\b/gi;
 
     for (const match of source.matchAll(programUnitPattern)) {
-        if (match[1].toUpperCase() === 'TYPE' && !match[2] &&
-            match[4].toUpperCase() !== 'UNDER' &&
-            !/^\s*OBJECT\b/i.test(source.slice(match.index + match[0].length))) {
+        const isTypeSpecification = match[1].toUpperCase() === 'TYPE' && !match[2];
+        const isObjectType = !isTypeSpecification ||
+            match[4].toUpperCase() === 'UNDER' ||
+            /^\s*OBJECT\b/i.test(source.slice(match.index + match[0].length));
+        if (isTypeSpecification && !isObjectType && !hasCreatePrefix(source, match.index)) {
             continue;
         }
         const programUnitName = match[3];
@@ -55,6 +57,14 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
             line: position.line,
             column: position.column
         });
+
+        // Schema collection types have a specification header but no members
+        // or body. Keeping the header in the shared index makes references to
+        // CREATE TYPE ... AS TABLE/VARRAY navigable without treating a
+        // package-local TYPE declaration as a program unit.
+        if (isTypeSpecification && !isObjectType) {
+            continue;
+        }
 
         const programUnitEnd = findProgramUnitEnd(source, match.index + match[0].length, programUnitName);
         const programUnitText = source.slice(match.index + match[0].length, programUnitEnd);
@@ -108,6 +118,114 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
     }
 
     return symbols;
+}
+
+/** Find a schema type name when the cursor is in a PL/SQL type position. */
+export function findSchemaTypeReferenceAt(
+    document: SemanticDocument,
+    line: number,
+    column: number
+): string | undefined {
+    const source = maskCommentsAndStrings(document.text);
+    const lineStart = positionToOffset(source, line);
+    if (lineStart === undefined) {
+        return undefined;
+    }
+    const lineEnd = source.indexOf('\n', lineStart);
+    const currentLine = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd);
+    const identifierPattern = /[A-Za-z][\w$#]*/g;
+    const identifier = [...currentLine.matchAll(identifierPattern)].find(match =>
+        column >= match.index && column < match.index + match[0].length
+    );
+    if (!identifier) {
+        return undefined;
+    }
+
+    const start = lineStart + identifier.index;
+    const end = start + identifier[0].length;
+    const before = source.slice(0, start);
+    const after = source.slice(end);
+    const qualifier = String.raw`(?:[A-Za-z][\w$#]*\s*\.\s*)?`;
+
+    if (isTreatTypePosition(source, start)) {
+        return identifier[0];
+    }
+
+    if (new RegExp(String.raw`\bUNDER\s+${qualifier}$`, 'i').test(before) ||
+        new RegExp(String.raw`\bTABLE\s+OF\s+${qualifier}$`, 'i').test(before) ||
+        new RegExp(String.raw`\bVARRAY\s*\([^)]*\)\s+OF\s+${qualifier}$`, 'i').test(before)) {
+        return identifier[0];
+    }
+
+    if (new RegExp(String.raw`\bRETURN\s+${qualifier}$`, 'i').test(before)) {
+        const functionMatches = [...before.matchAll(/\bFUNCTION\b/gi)];
+        const lastFunction = functionMatches.at(-1);
+        if (lastFunction) {
+            const functionHeader = before.slice(lastFunction.index);
+            if (!/\b(?:IS|AS|BEGIN)\b/i.test(functionHeader)) {
+                return identifier[0];
+            }
+        }
+    }
+
+    const declarationSuffix = /^\s*(?:\([^;]*?\))?\s*(?:NOT\s+NULL\s*)?(?::=|DEFAULT\b|[;,)])/i;
+    if (!declarationSuffix.test(after)) {
+        return undefined;
+    }
+
+    const parameterPrefix = new RegExp(
+        String.raw`(?:^|[,(])\s*[A-Za-z][\w$#]*\s+` +
+        String.raw`(?:(?:IN\s+OUT|IN|OUT)\s+)?(?:NOCOPY\s+)?${qualifier}$`,
+        'i'
+    );
+    const declarationPrefix = new RegExp(
+        String.raw`(?:^|[;\n,(])\s*[A-Za-z][\w$#]*\s+(?:CONSTANT\s+)?${qualifier}$`,
+        'i'
+    );
+    return parameterPrefix.test(before) || declarationPrefix.test(before)
+        ? identifier[0]
+        : undefined;
+}
+
+function isTreatTypePosition(text: string, typeOffset: number): boolean {
+    const beforeType = text.slice(0, typeOffset);
+    const typePrefix = /\bAS\s+(?:REF\s+)?(?:[A-Za-z][\w$#]*\s*\.\s*)?$/i.exec(beforeType);
+    if (!typePrefix) {
+        return false;
+    }
+
+    const asOffset = typePrefix.index + typePrefix[0].search(/\bAS\b/i);
+    let depth = 0;
+    for (let index = asOffset - 1; index >= 0; index--) {
+        if (text[index] === ')') {
+            depth++;
+        } else if (text[index] === '(') {
+            if (depth > 0) {
+                depth--;
+                continue;
+            }
+            const call = /([A-Za-z][\w$#]*)\s*$/.exec(text.slice(0, index));
+            return call?.[1].toUpperCase() === 'TREAT';
+        }
+    }
+    return false;
+}
+
+/** Return every repository specification/body header for a schema type name. */
+export function findSchemaTypeDefinitions(
+    typeName: string,
+    symbols: readonly ProgramUnitSymbol[]
+): ProgramUnitSymbol[] {
+    return symbols.filter(symbol =>
+        symbol.programUnitKind === 'type' &&
+        symbol.kind === 'type' &&
+        symbol.name.toLowerCase() === typeName.toLowerCase()
+    );
+}
+
+function hasCreatePrefix(text: string, typeOffset: number): boolean {
+    return /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:EDITIONABLE\s+|NONEDITIONABLE\s+)?$/i
+        .test(text.slice(0, typeOffset));
 }
 
 function findMemberHeader(
@@ -456,6 +574,21 @@ function offsetToPosition(text: string, offset: number): { line: number; column:
     const line = (before.match(/\n/g) || []).length;
     const lastNewline = before.lastIndexOf('\n');
     return { line, column: offset - lastNewline - 1 };
+}
+
+function positionToOffset(text: string, line: number): number | undefined {
+    if (line < 0) {
+        return undefined;
+    }
+    let offset = 0;
+    for (let currentLine = 0; currentLine < line; currentLine++) {
+        const newline = text.indexOf('\n', offset);
+        if (newline === -1) {
+            return undefined;
+        }
+        offset = newline + 1;
+    }
+    return offset;
 }
 
 function maskCommentsAndStrings(text: string): string {
