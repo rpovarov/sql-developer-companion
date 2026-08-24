@@ -26,6 +26,28 @@ function readJson<T>(relativePath: string): T {
   ) as T;
 }
 
+function zipEntries(archive: Buffer): string[] {
+  const endSignature = 0x06054b50;
+  let end = archive.length - 22;
+  while (end >= 0 && archive.readUInt32LE(end) !== endSignature) {
+    end--;
+  }
+  assert.ok(end >= 0, 'ZIP end-of-central-directory record is missing');
+
+  const entryCount = archive.readUInt16LE(end + 10);
+  let offset = archive.readUInt32LE(end + 16);
+  const entries: string[] = [];
+  for (let index = 0; index < entryCount; index++) {
+    assert.equal(archive.readUInt32LE(offset), 0x02014b50);
+    const nameLength = archive.readUInt16LE(offset + 28);
+    const extraLength = archive.readUInt16LE(offset + 30);
+    const commentLength = archive.readUInt16LE(offset + 32);
+    entries.push(archive.toString('utf8', offset + 46, offset + 46 + nameLength));
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
 test('package registers the Python Oracle SQL injection grammar', () => {
   const manifest = readJson<{
     contributes: {
@@ -56,19 +78,33 @@ test('package registers the Python Oracle SQL injection grammar', () => {
   ]);
 });
 
-test('packaged VSIX contains the Python Oracle SQL injection grammar', () => {
+test('packaged VSIX contains required assets and excludes private development files', () => {
   const manifest = readJson<{ version: string }>('package.json');
   const vsix = readFileSync(path.join(
     repositoryRoot,
     `sql-developer-companion-${manifest.version}.vsix`,
   ));
+  const entries = zipEntries(vsix);
 
-  assert.notEqual(
-    vsix.indexOf(Buffer.from(
-      'extension/syntaxes/python-oracle-sql.injection.json',
-    )),
-    -1,
-  );
+  for (const required of [
+    'extension/syntaxes/python-oracle-sql.injection.json',
+    'extension/examples/embedded_sql_examples.py',
+    'extension/out/extension.js',
+  ]) {
+    assert.ok(entries.includes(required), `${required} is missing from VSIX`);
+  }
+  for (const forbidden of entries.filter(entry =>
+    entry.startsWith('extension/src/') ||
+    entry.startsWith('extension/.scratch/') ||
+    entry.startsWith('extension/.github/') ||
+    entry.startsWith('extension/out/test/') ||
+    entry.startsWith('extension/out/benchmarks/') ||
+    entry.endsWith('.map') ||
+    entry.endsWith('.test.js') ||
+    /(?:^|\/)\.env(?:\.|$)/.test(entry)
+  )) {
+    assert.fail(`${forbidden} must not be packaged`);
+  }
 });
 
 test('package registers the optional theme-aware injection background', () => {

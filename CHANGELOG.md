@@ -27,6 +27,12 @@
   Definition and Peek results.
 - Added a compact, fictional `examples/` workspace covering supported package,
   object type, Python injection, and repository navigation forms.
+- Hardened the Recent Objects Webview with explicit local-resource isolation,
+  runtime message validation, and an allow-list for URI actions.
+- Added an explicit Workspace Trust declaration, production and developer
+  dependency audits, CodeQL, Dependabot updates, and reproducible VSIX checks.
+- Added an isolated VS Code Extension Host smoke test plus generated and
+  real-repository performance baselines for PL/SQL semantic extraction.
 
 ## 1.2.0 — 2026-08-21
 

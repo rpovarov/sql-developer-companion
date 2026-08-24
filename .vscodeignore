@@ -1,4 +1,5 @@
 .vscode/**
+.github/**
 src/**
 tsconfig.json
 **/*.ts
@@ -13,3 +14,5 @@ docs/**
 AGENTS.md
 CONTEXT.md
 out/**/*.test.js
+out/test/**
+out/benchmarks/**

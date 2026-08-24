@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { RecentItem } from './recentObjectsManager';
+import { resolveRecentObjectsMessage } from './webviewMessages';
 
 export interface ParsedItem {
     connection?: string;
@@ -130,18 +131,22 @@ export class RecentObjectsWebviewProvider implements vscode.WebviewViewProvider 
 
         webviewView.webview.options = {
             enableScripts: true,
+            localResourceRoots: [],
         };
 
         webviewView.webview.html = this._getHtml(webviewView.webview);
 
-        webviewView.webview.onDidReceiveMessage(msg => {
-            switch (msg.type) {
+        webviewView.webview.onDidReceiveMessage((message: unknown) => {
+            const action = resolveRecentObjectsMessage(message, this._items);
+            if (!action) {
+                return;
+            }
+            switch (action.type) {
                 case 'open':
-                    const item = this._items.find(i => i.uriString === msg.uriString);
-                    if (item) { this._onOpenItem.fire(item); }
+                    this._onOpenItem.fire(action.item);
                     break;
                 case 'remove':
-                    this._onRemoveItem.fire(msg.uriString);
+                    this._onRemoveItem.fire(action.uriString);
                     break;
                 case 'clearHistory':
                     this._onClearHistory.fire();
@@ -438,12 +443,6 @@ export class RecentObjectsWebviewProvider implements vscode.WebviewViewProvider 
             return iconMap[(type || '').toUpperCase()] || 'codicon-file-code';
         }
 
-        function escapeHtml(str) {
-            const div = document.createElement('div');
-            div.textContent = str || '';
-            return div.innerHTML;
-        }
-
         function formatTime(ts) {
             const d = new Date(ts);
             const now = new Date();
@@ -547,7 +546,11 @@ export class RecentObjectsWebviewProvider implements vscode.WebviewViewProvider 
                 } else {
                     text = sel.length + ' selected';
                 }
-                this.toggle.innerHTML = escapeHtml(text) + ' <span class="arrow">▾</span>';
+                const label = document.createTextNode(text + ' ');
+                const arrow = document.createElement('span');
+                arrow.className = 'arrow';
+                arrow.textContent = '▾';
+                this.toggle.replaceChildren(label, arrow);
             }
         }
 
@@ -604,19 +607,35 @@ export class RecentObjectsWebviewProvider implements vscode.WebviewViewProvider 
                 row.className = 'item';
                 row.title = item.uriString;
 
-                row.innerHTML =
-                    '<span class="item-icon codicon ' + getIcon(item.objectType) + '"></span>' +
-                    '<div class="item-content">' +
-                        '<div class="item-label">' + escapeHtml(item.label) + '</div>' +
-                        '<div class="item-detail">' + escapeHtml(item.connection) + ' \\u00B7 ' + escapeHtml(item.schema) + ' \\u00B7 ' + escapeHtml(item.objectType) + '</div>' +
-                    '</div>' +                    '<span class="item-time">' + escapeHtml(formatTime(item.timestamp)) + '</span>' +
-                    '<button class="item-remove" title="Remove">\u00D7</button>';
+                const icon = document.createElement('span');
+                icon.className = 'item-icon codicon ' + getIcon(item.objectType);
 
-                row.querySelector('.item-content').addEventListener('click', (e) => {
+                const content = document.createElement('div');
+                content.className = 'item-content';
+                const label = document.createElement('div');
+                label.className = 'item-label';
+                label.textContent = item.label;
+                const detail = document.createElement('div');
+                detail.className = 'item-detail';
+                detail.textContent = item.connection + ' \\u00B7 ' + item.schema + ' \\u00B7 ' + item.objectType;
+                content.append(label, detail);
+
+                const time = document.createElement('span');
+                time.className = 'item-time';
+                time.textContent = formatTime(item.timestamp);
+
+                const remove = document.createElement('button');
+                remove.className = 'item-remove';
+                remove.title = 'Remove';
+                remove.textContent = '\u00D7';
+
+                row.append(icon, content, time, remove);
+
+                content.addEventListener('click', (e) => {
                     tryOpen(item.uriString, e);
                 });
 
-                row.querySelector('.item-remove').addEventListener('click', (e) => {
+                remove.addEventListener('click', (e) => {
                     e.stopPropagation();
                     vscode.postMessage({ type: 'remove', uriString: item.uriString });
                 });

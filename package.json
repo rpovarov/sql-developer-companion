@@ -43,6 +43,11 @@
     "onLanguage:python",
     "workspaceContains:**/*.{pks,pkb,sql,pls,plb,pck,tps,tpb}"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "main": "./out/extension.js",
   "contributes": {
     "colors": [
@@ -192,7 +197,11 @@
         "sqlDevCompanion.packageDefinitionTarget": {
           "type": "string",
           "default": "body",
-          "enum": ["body", "spec", "both"],
+          "enum": [
+            "body",
+            "spec",
+            "both"
+          ],
           "enumDescriptions": [
             "Navigate to package body (.pkb) - shows implementation",
             "Navigate to package spec (.pks) - shows interface/signature",
@@ -208,7 +217,13 @@
         "sqlDevCompanion.highlightStyle": {
           "type": "string",
           "default": "subtle",
-          "enum": ["subtle", "moderate", "bold", "border-only", "custom"],
+          "enum": [
+            "subtle",
+            "moderate",
+            "bold",
+            "border-only",
+            "custom"
+          ],
           "enumDescriptions": [
             "Soft blue/gray background highlight",
             "Medium blue background highlight",
@@ -246,7 +261,10 @@
         "sqlDevCompanion.statusBarStyle": {
           "type": "string",
           "default": "background",
-          "enum": ["background", "border"],
+          "enum": [
+            "background",
+            "border"
+          ],
           "enumDescriptions": [
             "Fill the entire status bar background with the connection color",
             "Only show a colored border at the top of the status bar (less intrusive)"
@@ -280,7 +298,9 @@
                 "pattern": "^#[0-9A-Fa-f]{6}$"
               }
             },
-            "required": ["connectionName"]
+            "required": [
+              "connectionName"
+            ]
           }
         }
       }
@@ -289,12 +309,19 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "test": "npm run compile && node --test out/features/embeddedSql/embeddedSqlRanges.test.js out/features/embeddedSql/pythonOracleSqlGrammar.test.js out/features/examples/examples.test.js out/features/plsqlNavigation/embeddedSqlNavigation.test.js out/features/plsqlNavigation/semanticNavigation.test.js out/features/plsqlNavigation/workspaceIndexer.test.js",
+    "test": "npm run compile && node --test out/features/embeddedSql/embeddedSqlRanges.test.js out/features/embeddedSql/pythonOracleSqlGrammar.test.js out/features/examples/examples.test.js out/features/plsqlNavigation/embeddedSqlNavigation.test.js out/features/plsqlNavigation/semanticNavigation.test.js out/features/plsqlNavigation/workspaceIndexer.test.js out/features/recentObjects/webviewMessages.test.js out/features/security/securityManifest.test.js",
+    "test:integration": "npm run compile && node out/test/runTest.js",
+    "test:vsix": "node --test out/features/embeddedSql/pythonOracleSqlGrammar.test.js",
+    "benchmark": "npm run compile && node out/benchmarks/plsqlNavigationBenchmark.js",
+    "security:audit": "npm audit --omit=dev --audit-level=high",
+    "package:vsix": "vsce package",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "3.9.2",
     "typescript": "^5.3.0"
   },
   "dependencies": {

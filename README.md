@@ -109,6 +109,26 @@ Color-code your workspace based on which Oracle connection is active — never a
 | `sqlDevCompanion.statusBarStyle` | `"background"` | Status bar color style: `"background"` or `"border"` |
 | `sqlDevCompanion.connectionRules` | `[]` | Connection-to-badge/color mappings (set via right-click menu) |
 
+## Development verification
+
+The release gate is intentionally command-driven so reviewers do not need to
+inspect TypeScript manually:
+
+```powershell
+npm test
+npm run security:audit
+npm run benchmark -- examples
+npm run test:integration
+npm run package:vsix
+npm run test:vsix
+```
+
+GitHub Actions repeats compilation, tests, production auditing, packaging,
+VSIX inspection, the generated benchmark, and the isolated Extension Host
+smoke test. CodeQL scans JavaScript/TypeScript, while Dependabot tracks npm and
+workflow dependencies. The repository also records the detailed security audit
+and reproducible performance baseline under `docs/`.
+
 ## License
 
 [MIT](LICENSE) — Copyright (c) 2026 Weizmann Institute of Science
