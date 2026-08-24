@@ -56,6 +56,21 @@ test('package registers the Python Oracle SQL injection grammar', () => {
   ]);
 });
 
+test('packaged VSIX contains the Python Oracle SQL injection grammar', () => {
+  const manifest = readJson<{ version: string }>('package.json');
+  const vsix = readFileSync(path.join(
+    repositoryRoot,
+    `sql-developer-companion-${manifest.version}.vsix`,
+  ));
+
+  assert.notEqual(
+    vsix.indexOf(Buffer.from(
+      'extension/syntaxes/python-oracle-sql.injection.json',
+    )),
+    -1,
+  );
+});
+
 test('package registers the optional theme-aware injection background', () => {
   const manifest = readJson<{
     activationEvents: string[];

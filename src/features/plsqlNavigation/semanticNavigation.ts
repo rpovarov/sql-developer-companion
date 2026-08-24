@@ -23,6 +23,7 @@ export interface ProgramUnitSymbol {
     parameterCount: number;
     requiredParameterCount: number;
     parameterNames: string[];
+    requiredParameterNames: string[];
     signatureComplete: boolean;
     baseTypeName?: string;
     collectionElementTypeName?: string;
@@ -89,6 +90,7 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
             parameterCount: 0,
             requiredParameterCount: 0,
             parameterNames: [],
+            requiredParameterNames: [],
             signatureComplete: true,
             ...typeDetails,
             side: match[2] ? 'body' : 'specification',
@@ -137,6 +139,7 @@ export function extractProgramUnitSymbols(document: SemanticDocument): ProgramUn
                 parameterCount: parameters.count,
                 requiredParameterCount: parameters.requiredCount,
                 parameterNames: parameters.names,
+                requiredParameterNames: parameters.requiredNames,
                 signatureComplete: parameters.complete,
                 isImplementation: match[2] ? header?.bodyStart !== undefined : false,
                 side: match[2] ? 'body' : 'specification',
@@ -602,13 +605,23 @@ function findMemberHeader(
 function extractParameterSignature(
     text: string,
     start: number
-): { signature: string; count: number; requiredCount: number; names: string[]; complete: boolean } {
+): {
+    signature: string;
+    count: number;
+    requiredCount: number;
+    names: string[];
+    requiredNames: string[];
+    complete: boolean;
+} {
     let opening = start;
     while (/\s/.test(text[opening] || '')) {
         opening++;
     }
     if (text[opening] !== '(') {
-        return { signature: '', count: 0, requiredCount: 0, names: [], complete: true };
+        return {
+            signature: '', count: 0, requiredCount: 0,
+            names: [], requiredNames: [], complete: true
+        };
     }
 
     let depth = 1;
@@ -622,15 +635,24 @@ function extractParameterSignature(
         closing++;
     }
     if (depth !== 0) {
-        return { signature: '', count: 0, requiredCount: 0, names: [], complete: false };
+        return {
+            signature: '', count: 0, requiredCount: 0,
+            names: [], requiredNames: [], complete: false
+        };
     }
 
     const parameters = splitParameters(text.slice(opening + 1, closing - 1));
+    const requiredParameters = parameters.filter(
+        parameter => !/(?:\bDEFAULT\b|:=)/i.test(parameter)
+    );
+    const parameterName = (parameter: string): string =>
+        /^\s*([A-Za-z][\w$#]*)/.exec(parameter)?.[1] ?? '';
     return {
         signature: parameters.map(normalizeParameter).join(','),
         count: parameters.length,
-        requiredCount: parameters.filter(parameter => !/(?:\bDEFAULT\b|:=)/i.test(parameter)).length,
-        names: parameters.map(parameter => /^\s*([A-Za-z][\w$#]*)/.exec(parameter)?.[1] ?? ''),
+        requiredCount: requiredParameters.length,
+        names: parameters.map(parameterName),
+        requiredNames: requiredParameters.map(parameterName),
         complete: true
     };
 }

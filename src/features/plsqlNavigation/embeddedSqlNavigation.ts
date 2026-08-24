@@ -21,6 +21,7 @@ interface Identifier {
 interface CallShape {
     argumentCount: number;
     namedArguments: string[];
+    positionalArgumentCount: number;
 }
 
 /** Resolve a static Oracle reference under a cursor in supported embedded SQL. */
@@ -155,7 +156,15 @@ function isCompatibleCall(call: CallShape, symbol: ProgramUnitSymbol): boolean {
         return false;
     }
     const parameterNames = new Set(symbol.parameterNames.map(name => name.toLowerCase()));
-    return call.namedArguments.every(name => parameterNames.has(name.toLowerCase()));
+    if (!call.namedArguments.every(name => parameterNames.has(name.toLowerCase()))) {
+        return false;
+    }
+    const namedArguments = new Set(call.namedArguments.map(name => name.toLowerCase()));
+    return symbol.requiredParameterNames.every(name => {
+        const parameterIndex = symbol.parameterNames.indexOf(name);
+        return parameterIndex < call.positionalArgumentCount ||
+            namedArguments.has(name.toLowerCase());
+    });
 }
 
 function findIdentifierAt(text: string, offset: number): Identifier | undefined {
@@ -224,12 +233,14 @@ function callShapeAfter(text: string, identifier: Identifier): CallShape | undef
         return undefined;
     }
     const argumentsList = splitTopLevel(text.slice(opening + 1, closing));
+    const namedArguments = argumentsList.flatMap(argument => {
+        const named = /^\s*([A-Za-z][\w$#]*)\s*=>/i.exec(argument);
+        return named ? [named[1]] : [];
+    });
     return {
         argumentCount: argumentsList.length,
-        namedArguments: argumentsList.flatMap(argument => {
-            const named = /^\s*([A-Za-z][\w$#]*)\s*=>/i.exec(argument);
-            return named ? [named[1]] : [];
-        }),
+        namedArguments,
+        positionalArgumentCount: argumentsList.length - namedArguments.length,
     };
 }
 

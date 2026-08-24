@@ -99,6 +99,26 @@ test('definition target and named arguments select the matching overload', () =>
     ]);
 });
 
+test('named arguments exclude overloads with an omitted required parameter', () => {
+    const allSymbols = symbols('file:///repo/order_api.pks', [
+        'CREATE PACKAGE order_api AS',
+        '    PROCEDURE submit_order(p_id NUMBER, p_code VARCHAR2 DEFAULT NULL);',
+        '    PROCEDURE submit_order(p_code VARCHAR2, p_id NUMBER DEFAULT NULL);',
+        'END order_api;',
+        '/',
+    ].join('\n'));
+    const python = 'query = """BEGIN order_api.submit_order(p_code => :code); END;"""';
+    const offset = python.indexOf('submit_order') + 2;
+
+    const resolution = resolveEmbeddedSqlReferenceAt(
+        python, offset, lookup(allSymbols), 'declaration', 'body',
+    );
+
+    assert.deepEqual(resolution?.targets.map(target => target.parameterNames), [
+        ['p_code', 'p_id'],
+    ]);
+});
+
 test('resolves a type name and its static method', () => {
     const allSymbols = [
         ...symbols('file:///repo/order_factory.tps', [

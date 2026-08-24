@@ -23,6 +23,8 @@
 - Added repository Definition, Declaration, and Implementation navigation from
   static PL/SQL package/type references in embedded Python SQL, including
   overload filtering by argument count and named arguments.
+- Required named parameters now exclude incompatible overloads from Python
+  Definition and Peek results.
 - Added a compact, fictional `examples/` workspace covering supported package,
   object type, Python injection, and repository navigation forms.
 
