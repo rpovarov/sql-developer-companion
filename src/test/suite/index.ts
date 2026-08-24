@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
+import { withTimeout } from '../withTimeout';
 
 const EXTENSION_ID = 'shmuel-appleton.sql-developer-companion';
 
@@ -101,24 +102,4 @@ function targetUris(targets: readonly DefinitionTarget[] | undefined): vscode.Ur
     return (targets ?? []).map(target =>
         'targetUri' in target ? target.targetUri : target.uri
     );
-}
-
-async function withTimeout<T>(
-    work: PromiseLike<T>,
-    timeoutMs: number,
-    message: string,
-): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-        return await Promise.race([
-            Promise.resolve(work),
-            new Promise<never>((_, reject) => {
-                timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-            }),
-        ]);
-    } finally {
-        if (timer) {
-            clearTimeout(timer);
-        }
-    }
 }
