@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.0 — 2026-08-24
+
+- Added Oracle SQL syntax highlighting inside ordinary and raw triple-quoted
+  Python strings assigned to SQL-like variable names.
+- Added highlighting for implicitly concatenated string literals inside
+  parenthesized SQL-like assignments, excluding commented-out fragments.
+- Added mixed Oracle SQL/Python highlighting for triple-quoted SQL f-strings,
+  preserving Python syntax inside `{...}` interpolation.
+- Added highlighting for triple-quoted SQL passed directly to `execute` and
+  `executemany` methods, including first arguments moved to the following line.
+- Added mixed Oracle SQL/Python highlighting for adjacent single-line f-strings
+  used as a following-line `execute` or `executemany` first argument.
+- Added highlighting for ordinary and raw single-line SQL strings used in the
+  same following-line direct-execution form.
+- Reused Oracle SQL Developer's grammar so embedded SQL follows the active
+  Oracle SQL syntax theme.
+- Added a subtle theme-aware background for embedded SQL, with an opt-out
+  setting and a customizable workbench color.
+- Added theme-aware lexical scopes for qualified PL/SQL calls, named arguments,
+  and bind variables inside every supported Python SQL injection context.
+- Added repository Definition, Declaration, and Implementation navigation from
+  static PL/SQL package/type references in embedded Python SQL, including
+  overload filtering by argument count and named arguments.
+- Added a compact, fictional `examples/` workspace covering supported package,
+  object type, Python injection, and repository navigation forms.
+
 ## 1.2.0 — 2026-08-21
 
 - Personal fork release based on upstream `1.1.2`.

@@ -2,12 +2,17 @@ import * as vscode from 'vscode';
 import { PlsqlDefinitionProvider } from './definitionProvider';
 import { PlsqlHoverProvider } from './hoverProvider';
 import { PlsqlParser } from './plsqlParser';
+import { PythonEmbeddedSqlDefinitionProvider } from './pythonDefinitionProvider';
 import { WorkspaceIndexer } from './workspaceIndexer';
 
 const PLSQL_SELECTOR: vscode.DocumentSelector = [
     { language: 'oracle-sql' },
     { language: 'oracle-sql', scheme: 'dbtools' },
     { language: 'oracle-sql', scheme: 'file' }
+];
+
+const PYTHON_SELECTOR: vscode.DocumentSelector = [
+    { language: 'python', scheme: 'file' }
 ];
 
 export function activatePlsqlNavigation(context: vscode.ExtensionContext, outputChannel: vscode.OutputChannel) {
@@ -22,6 +27,16 @@ export function activatePlsqlNavigation(context: vscode.ExtensionContext, output
         vscode.languages.registerDefinitionProvider(PLSQL_SELECTOR, definitionProvider),
         vscode.languages.registerDeclarationProvider(PLSQL_SELECTOR, definitionProvider),
         vscode.languages.registerImplementationProvider(PLSQL_SELECTOR, definitionProvider)
+    );
+
+    const pythonDefinitionProvider = new PythonEmbeddedSqlDefinitionProvider(
+        outputChannel,
+        workspaceIndexer
+    );
+    context.subscriptions.push(
+        vscode.languages.registerDefinitionProvider(PYTHON_SELECTOR, pythonDefinitionProvider),
+        vscode.languages.registerDeclarationProvider(PYTHON_SELECTOR, pythonDefinitionProvider),
+        vscode.languages.registerImplementationProvider(PYTHON_SELECTOR, pythonDefinitionProvider)
     );
 
     // Register Hover Provider

@@ -3,6 +3,7 @@ import { activateRecentObjects } from './features/recentObjects/activate';
 import { activatePlsqlNavigation } from './features/plsqlNavigation/activate';
 import { activateStatementHighlighter } from './features/statementHighlighter/activate';
 import { activateConnectionColors } from './features/connectionColors/activate';
+import { activateEmbeddedSqlBackground } from './features/embeddedSql/activate';
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel('SQL Developer Companion');
@@ -12,6 +13,7 @@ export function activate(context: vscode.ExtensionContext) {
     activatePlsqlNavigation(context, outputChannel);
     activateStatementHighlighter(context, outputChannel);
     activateConnectionColors(context, outputChannel);
+    activateEmbeddedSqlBackground(context);
 }
 
 export function deactivate() {}

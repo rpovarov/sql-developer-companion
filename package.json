@@ -2,7 +2,7 @@
   "name": "sql-developer-companion",
   "displayName": "SQL Developer Companion",
   "description": "Companion utilities for Oracle SQL Developer in VS Code",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "shmuel-appleton",
   "repository": {
     "type": "git",
@@ -29,7 +29,10 @@
     "peek",
     "connection",
     "color",
-    "tabs"
+    "tabs",
+    "python",
+    "embedded sql",
+    "syntax highlighting"
   ],
   "extensionDependencies": [
     "Oracle.sql-developer"
@@ -37,10 +40,40 @@
   "activationEvents": [
     "onStartupFinished",
     "onLanguage:oracle-sql",
+    "onLanguage:python",
     "workspaceContains:**/*.{pks,pkb,sql,pls,plb,pck,tps,tpb}"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "colors": [
+      {
+        "id": "sqlDevCompanion.embeddedSqlBackground",
+        "description": "Background color for Oracle SQL embedded in Python strings.",
+        "defaults": {
+          "dark": "#7A9AA614",
+          "light": "#4A687314",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "scopeName": "sql-developer-companion.python-oracle-sql.injection",
+        "path": "./syntaxes/python-oracle-sql.injection.json",
+        "injectTo": [
+          "source.python"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.oracle-sql": "oracle-sql",
+          "meta.embedded.inline.oracle-sql": "oracle-sql"
+        },
+        "tokenTypes": {
+          "meta.embedded.block.oracle-sql": "other",
+          "meta.embedded.inline.oracle-sql": "other"
+        }
+      }
+    ],
     "languages": [
       {
         "id": "oracle-sql",
@@ -142,6 +175,11 @@
           "type": "number",
           "default": 50,
           "description": "Maximum number of recent Oracle objects to remember"
+        },
+        "sqlDevCompanion.embeddedSqlBackground": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a subtle theme-aware background behind Oracle SQL embedded in Python strings."
         },
         "sqlDevCompanion.uriSchemes": {
           "type": "array",
@@ -251,7 +289,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "test": "npm run compile && node --test out/features/plsqlNavigation/semanticNavigation.test.js out/features/plsqlNavigation/workspaceIndexer.test.js",
+    "test": "npm run compile && node --test out/features/embeddedSql/embeddedSqlRanges.test.js out/features/embeddedSql/pythonOracleSqlGrammar.test.js out/features/examples/examples.test.js out/features/plsqlNavigation/embeddedSqlNavigation.test.js out/features/plsqlNavigation/semanticNavigation.test.js out/features/plsqlNavigation/workspaceIndexer.test.js",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {

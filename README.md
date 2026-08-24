@@ -36,6 +36,47 @@ Highlights the executed SQL statement in the editor when query results are displ
 
 - **Automatic highlighting** — when you run a statement in a worksheet, the executed code is highlighted in the editor.
 
+### Embedded Oracle SQL in Python
+
+Oracle SQL syntax highlighting is applied inside high-confidence Python string
+contexts by reusing the grammar from Oracle SQL Developer.
+
+The compact, fictional [examples workspace](examples/README.md) demonstrates
+all supported Python injection and local PL/SQL navigation forms.
+
+- **Named SQL strings** — ordinary and raw triple-quoted strings assigned to
+  names containing `sql`, `query`, or `statement` are highlighted, as are
+  `stmt`, `ddl`, and `dml`.
+- **SQL f-strings** — triple-quoted f-strings assigned to those same SQL-like
+  names use Oracle SQL highlighting while expressions inside `{...}` retain
+  Python highlighting.
+- **Implicit concatenation** — adjacent ordinary or raw strings inside a
+  parenthesized SQL assignment are highlighted individually; commented-out
+  string fragments remain Python comments.
+- **Direct execution** — a triple-quoted first argument passed directly to
+  `execute` or `executemany` is highlighted, including when the opening string
+  delimiter is placed on the following line. Ordinary, raw, and adjacent
+  f-string single-line arguments are also highlighted when they start on the
+  following line.
+- **Visible boundary** — a quiet theme-aware background separates embedded SQL
+  from surrounding Python. Disable it with
+  `sqlDevCompanion.embeddedSqlBackground`; customize its color through
+  `workbench.colorCustomizations` using the
+  `sqlDevCompanion.embeddedSqlBackground` color ID.
+- **PL/SQL call details** — embedded blocks give qualified calls
+  (`package.method`), named arguments (`p_name =>`), and bind variables
+  (`:name`) standard TextMate scopes so compatible themes can distinguish
+  them from ordinary Oracle identifiers.
+- **Repository navigation** — Ctrl+Click resolves static `package.member`
+  calls, static object type calls, and schema-level object type names to local
+  PL/SQL files in the current workspace. Declaration and Implementation select
+  spec and body; Definition follows `packageDefinitionTarget` and preserves
+  ambiguous overloads for Peek.
+- **Deliberately local and static** — this feature does not add SQL completion,
+  diagnostics, or formatting. Unqualified calls, dynamic f-string names,
+  identifiers split across string fragments, and database-only definitions are
+  intentionally excluded.
+
 ### Connection Colors
 
 Color-code your workspace based on which Oracle connection is active — never accidentally run queries on the wrong database.
@@ -54,6 +95,7 @@ Color-code your workspace based on which Oracle connection is active — never a
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `sqlDevCompanion.maxRecentItems` | `50` | Maximum number of recent objects to remember |
+| `sqlDevCompanion.embeddedSqlBackground` | `true` | Show a subtle background behind Oracle SQL embedded in Python |
 | `sqlDevCompanion.uriSchemes` | `[]` | URI schemes to track (leave empty to auto-detect Oracle schemes) |
 | `sqlDevCompanion.recentObjectsOpenAsPreview` | `false` | Open recent objects in preview mode (italic tab, replaced on next open) |
 | `sqlDevCompanion.packageDefinitionTarget` | `"body"` | Navigate to package body, spec, or both |
